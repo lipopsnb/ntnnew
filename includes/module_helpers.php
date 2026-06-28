@@ -16,7 +16,7 @@ if (!function_exists('erp_db')) {
             }
         }
 
-        foreach (['getPDO', 'getConnection', 'db_connect'] as $callable) {
+        foreach (['getPDO', 'getConnection', 'db_connect', 'getDBConnection'] as $callable) {
             if (function_exists($callable)) {
                 $pdo = $callable();
                 if ($pdo instanceof PDO) {
@@ -246,6 +246,33 @@ if (!function_exists('erp_generate_code')) {
         }
 
         return sprintf('%s-%s-%03d', $prefix, $year, $nextNumber);
+    }
+}
+
+if (!function_exists('erp_generate_daily_code')) {
+    /**
+     * Generate a document code in the format PREFIX-YYYY-MM-DD-XXX.
+     * Uses SELECT … FOR UPDATE via a transaction for safe concurrent generation.
+     */
+    function erp_generate_daily_code(PDO $pdo, string $table, string $column, string $prefix, ?string $date = null): string
+    {
+        if (!preg_match('/^[a-zA-Z0-9_]+$/', $table) || !preg_match('/^[a-zA-Z0-9_]+$/', $column)) {
+            throw new InvalidArgumentException('Invalid table or column name.');
+        }
+
+        $dateStr = $date ? date('Y-m-d', strtotime($date)) : date('Y-m-d');
+        $like = sprintf('%s-%s-%%', $prefix, $dateStr);
+        $sql = "SELECT {$column} FROM {$table} WHERE {$column} LIKE ? ORDER BY {$column} DESC LIMIT 1";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([$like]);
+        $lastCode = (string) ($stmt->fetchColumn() ?: '');
+
+        $nextNumber = 1;
+        if ($lastCode !== '' && preg_match('/(\d+)$/', $lastCode, $matches)) {
+            $nextNumber = (int) $matches[1] + 1;
+        }
+
+        return sprintf('%s-%s-%03d', $prefix, $dateStr, $nextNumber);
     }
 }
 

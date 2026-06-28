@@ -31,7 +31,7 @@ foreach ($pdo->query($itemSql)->fetchAll(PDO::FETCH_ASSOC) as $item) {
 }
 
 $formData = [
-    'delivery_code' => erp_generate_code($pdo, 'deliveries', 'delivery_code', 'DL'),
+    'delivery_code' => erp_generate_daily_code($pdo, 'deliveries', 'delivery_code', 'GH'),
     'job_order_id' => 0,
     'customer_id' => 0,
     'delivery_date' => date('Y-m-d'),
@@ -86,14 +86,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!$errors) {
         try {
             $pdo->beginTransaction();
-            $stmt = $pdo->prepare('INSERT INTO deliveries (delivery_code, job_order_id, customer_id, delivery_date, recipient_name, driver, note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
-            $stmt->execute([$formData['delivery_code'], $formData['job_order_id'], $formData['customer_id'], $formData['delivery_date'], $formData['recipient_name'], $formData['driver'], $formData['note']]);
+            $stmt = $pdo->prepare('INSERT INTO deliveries (delivery_code, job_order_id, customer_id, delivery_date, recipient_name, driver, note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+            $stmt->execute([$formData['delivery_code'], $formData['job_order_id'], $formData['customer_id'], $formData['delivery_date'], $formData['recipient_name'], $formData['driver'], $formData['note'], erp_current_user_id()]);
             $deliveryId = (int) $pdo->lastInsertId();
-            $insertItem = $pdo->prepare('INSERT INTO delivery_items (delivery_id, job_order_item_id, product_code_id, qty_delivered, unit_price, amount, created_at, updated_at) SELECT ?, joi.id, joi.product_code_id, ?, ?, ?, NOW(), NOW() FROM job_order_items joi WHERE joi.id = ? AND joi.job_order_id = ?');
+            $insertItem = $pdo->prepare('INSERT INTO delivery_items (delivery_id, job_order_item_id, product_code_id, qty_delivered, unit_price, amount) SELECT ?, joi.id, joi.product_code_id, ?, ?, ? FROM job_order_items joi WHERE joi.id = ? AND joi.job_order_id = ?');
             foreach ($items as $item) {
                 $insertItem->execute([$deliveryId, $item['qty_delivered'], $item['unit_price'], $item['amount'], $item['job_order_item_id'], $formData['job_order_id']]);
             }
-            $pdo->prepare("UPDATE job_orders SET status = 'delivered', updated_at = NOW() WHERE id = ?")->execute([$formData['job_order_id']]);
+            $pdo->prepare("UPDATE job_orders SET status = 'delivered' WHERE id = ?")->execute([$formData['job_order_id']]);
             $pdo->commit();
             erp_flash('success', 'Đã tạo phiếu giao hàng.');
             erp_redirect(erp_url('modules/delivery/index.php'));

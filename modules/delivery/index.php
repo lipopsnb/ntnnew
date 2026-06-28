@@ -78,9 +78,9 @@ include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/sidebar.php';
     <div class="card shadow-sm border-0">
         <div class="card-body table-responsive">
             <table class="table table-hover align-middle mb-0">
-                <thead class="table-light"><tr><th>Mã giao hàng</th><th>Khách hàng</th><th>Phiếu GC</th><th>Ngày giao</th><th>Người nhận</th><th>Tài xế</th><th>Số dòng</th></tr></thead>
+                <thead class="table-light"><tr><th>Mã giao hàng</th><th>Khách hàng</th><th>Phiếu GC</th><th>Ngày giao</th><th>Người nhận</th><th>Tài xế</th><th>Số dòng</th><th></th></tr></thead>
                 <tbody>
-                <?php if (!$deliveries): ?><tr><td colspan="7" class="text-center text-muted py-4">Chưa có phiếu giao hàng.</td></tr><?php endif; ?>
+                <?php if (!$deliveries): ?><tr><td colspan="8" class="text-center text-muted py-4">Chưa có phiếu giao hàng.</td></tr><?php endif; ?>
                 <?php foreach ($deliveries as $delivery): ?>
                     <tr>
                         <td class="fw-semibold"><?= erp_h($delivery['delivery_code']) ?></td>
@@ -90,6 +90,11 @@ include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/sidebar.php';
                         <td><?= erp_h($delivery['recipient_name']) ?></td>
                         <td><?= erp_h($delivery['driver']) ?></td>
                         <td><?= (int) $delivery['items_count'] ?></td>
+                        <td>
+                            <a class="btn btn-sm btn-outline-secondary" href="<?= erp_h(erp_url('modules/delivery/print.php') . '?id=' . (int) $delivery['id']) ?>" target="_blank" title="In phiếu">
+                                <i class="fas fa-print"></i>
+                            </a>
+                        </td>
                     </tr>
                 <?php endforeach; ?>
                 </tbody>

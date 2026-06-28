@@ -4,141 +4,91 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/auth.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/functions.php';
 requireRole('director', 'accountant');
 
-$pdo    = getDBConnection();
-$id     = (int)($_GET['id'] ?? 0);
-$errors = [];
-
-// Lấy thông tin user cần sửa
-$stmt = $pdo->prepare("SELECT u.*, r.name as role FROM users u JOIN roles r ON u.role_id = r.id WHERE u.id = ?");
+$pdo = getDBConnection();
+$id = (int) ($_GET['id'] ?? 0);
+$stmt = $pdo->prepare("SELECT * FROM users WHERE id = ? LIMIT 1");
 $stmt->execute([$id]);
-$editUser = $stmt->fetch();
-if (!$editUser) { setFlash('danger', 'Không tìm thấy tài khoản.'); header('Location: /ntn_erp/modules/users/index.php'); exit(); }
+$target = $stmt->fetch();
+if (!$target) {
+    setFlash('danger', 'Không tìm thấy nhân viên.');
+    header('Location: /ntn_erp/modules/users/index.php');
+    exit();
+}
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && verifyCSRF($_POST['csrf_token'] ?? '')) {
-    $full_name  = trim($_POST['full_name']     ?? '');
-    $email      = trim($_POST['email']         ?? '');
-    $phone      = trim($_POST['phone']         ?? '');
-    $role_id    = (int)($_POST['role_id']      ?? 0);
-    $dept_id    = (int)($_POST['department_id'] ?? 0) ?: null;
-    $employee_code = trim($_POST['employee_code'] ?? '');
+$roles = $pdo->query("SELECT id, display_name FROM roles ORDER BY id ASC")->fetchAll();
+$departments = $pdo->query("SELECT id, name FROM departments ORDER BY name ASC")->fetchAll();
+$errors = [];
+$form = $target;
 
-    if (empty($full_name))     $errors[] = 'Họ tên không được để trống.';
-    if (!$role_id)             $errors[] = 'Vui lòng chọn phân quyền.';
-    if (empty($employee_code)) $errors[] = 'Mã nhân viên không được để trống.';
-
-    // Kiểm tra trùng employee_code với user khác
-    if (empty($errors)) {
-        $chk = $pdo->prepare("SELECT COUNT(*) FROM users WHERE employee_code = ? AND id != ?");
-        $chk->execute([$employee_code, $id]);
-        if ($chk->fetchColumn() > 0) $errors[] = 'Mã nhân viên đã tồn tại.';
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCSRF($_POST['csrf_token'] ?? '')) {
+        setFlash('danger', 'Phiên làm việc không hợp lệ.');
+        header('Location: /ntn_erp/modules/users/edit.php?id=' . $id);
+        exit();
     }
 
-    if (empty($errors)) {
-        $pdo->prepare("UPDATE users SET full_name=?, email=?, phone=?, role_id=?, department_id=?, employee_code=? WHERE id=?")
-            ->execute([$full_name, $email, $phone, $role_id, $dept_id, $employee_code, $id]);
-        setFlash('success', 'Cập nhật tài khoản thành công!');
+    $form = [
+        'employee_code' => trim($_POST['employee_code'] ?? ''),
+        'full_name' => trim($_POST['full_name'] ?? ''),
+        'username' => trim($_POST['username'] ?? ''),
+        'email' => trim($_POST['email'] ?? ''),
+        'phone' => trim($_POST['phone'] ?? ''),
+        'role_id' => (int) ($_POST['role_id'] ?? 0),
+        'department_id' => $_POST['department_id'] !== '' ? (int) $_POST['department_id'] : null,
+        'is_active' => isset($_POST['is_active']) ? 1 : 0,
+    ];
+    $password = trim($_POST['password'] ?? '');
+
+    if ($form['employee_code'] === '' || $form['full_name'] === '' || $form['username'] === '' || $form['role_id'] <= 0) {
+        $errors[] = 'Vui lòng nhập đầy đủ các trường bắt buộc.';
+    }
+    if ($password !== '' && strlen($password) < 6) $errors[] = 'Mật khẩu mới phải có ít nhất 6 ký tự.';
+
+    $checkStmt = $pdo->prepare("SELECT SUM(username = ?) AS username_exists, SUM(employee_code = ?) AS code_exists FROM users WHERE id <> ?");
+    $checkStmt->execute([$form['username'], $form['employee_code'], $id]);
+    $check = $checkStmt->fetch();
+    if ((int) ($check['username_exists'] ?? 0) > 0) $errors[] = 'Tên đăng nhập đã tồn tại.';
+    if ((int) ($check['code_exists'] ?? 0) > 0) $errors[] = 'Mã nhân viên đã tồn tại.';
+
+    if (!$errors) {
+        if ($password !== '') {
+            $stmt = $pdo->prepare("UPDATE users SET employee_code = ?, full_name = ?, username = ?, password_hash = ?, email = ?, phone = ?, role_id = ?, department_id = ?, is_active = ? WHERE id = ?");
+            $stmt->execute([$form['employee_code'], $form['full_name'], $form['username'], password_hash($password, PASSWORD_DEFAULT), $form['email'] ?: null, $form['phone'] ?: null, $form['role_id'], $form['department_id'], $form['is_active'], $id]);
+        } else {
+            $stmt = $pdo->prepare("UPDATE users SET employee_code = ?, full_name = ?, username = ?, email = ?, phone = ?, role_id = ?, department_id = ?, is_active = ? WHERE id = ?");
+            $stmt->execute([$form['employee_code'], $form['full_name'], $form['username'], $form['email'] ?: null, $form['phone'] ?: null, $form['role_id'], $form['department_id'], $form['is_active'], $id]);
+        }
+        setFlash('success', 'Đã cập nhật nhân viên.');
         header('Location: /ntn_erp/modules/users/index.php');
         exit();
     }
 }
 
-$roles = $pdo->query("SELECT * FROM roles ORDER BY id")->fetchAll();
-$depts = $pdo->query("SELECT * FROM departments ORDER BY name")->fetchAll();
-$csrf  = generateCSRF();
 include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/header.php';
 include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/sidebar.php';
 ?>
-
 <div class="main-content">
-<div class="container-fluid py-4">
-
-    <div class="d-flex align-items-center gap-3 mb-4">
-        <a href="/ntn_erp/modules/users/index.php" class="btn btn-outline-secondary btn-sm">
-            <i class="fas fa-arrow-left"></i>
-        </a>
-        <h4 class="mb-0">✏️ Chỉnh sửa tài khoản: <strong><?= htmlspecialchars($editUser['full_name']) ?></strong></h4>
-    </div>
-
-    <?php if (!empty($errors)): ?>
-    <div class="alert alert-danger">
-        <ul class="mb-0"><?php foreach ($errors as $e): ?><li><?= htmlspecialchars($e) ?></li><?php endforeach; ?></ul>
-    </div>
-    <?php endif; ?>
-
-    <div class="col-lg-8">
-        <form method="POST">
-            <input type="hidden" name="csrf_token" value="<?= $csrf ?>">
-
-            <div class="card border-0 shadow-sm mb-3">
-                <div class="card-header bg-white fw-bold"><i class="fas fa-user me-2 text-primary"></i>Thông tin cơ bản</div>
-                <div class="card-body">
-                    <div class="row g-3">
-                        <div class="col-md-4">
-                            <label class="form-label fw-semibold">Mã nhân viên <span class="text-danger">*</span></label>
-                            <input type="text" name="employee_code" class="form-control"
-                                   value="<?= htmlspecialchars($_POST['employee_code'] ?? $editUser['employee_code']) ?>" required>
-                        </div>
-                        <div class="col-md-8">
-                            <label class="form-label fw-semibold">Họ và tên <span class="text-danger">*</span></label>
-                            <input type="text" name="full_name" class="form-control"
-                                   value="<?= htmlspecialchars($_POST['full_name'] ?? $editUser['full_name']) ?>" required>
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label fw-semibold">Email</label>
-                            <input type="email" name="email" class="form-control"
-                                   value="<?= htmlspecialchars($_POST['email'] ?? $editUser['email'] ?? '') ?>">
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label fw-semibold">Số điện thoại</label>
-                            <input type="text" name="phone" class="form-control"
-                                   value="<?= htmlspecialchars($_POST['phone'] ?? $editUser['phone'] ?? '') ?>">
-                        </div>
-                    </div>
-                </div>
+    <div class="container-fluid py-4">
+        <?php showFlash(); ?>
+        <?php if ($errors): ?><div class="alert alert-danger"><ul class="mb-0"><?php foreach ($errors as $error): ?><li><?= e($error) ?></li><?php endforeach; ?></ul></div><?php endif; ?>
+        <div class="card shadow-sm border-0">
+            <div class="card-header bg-primary text-white">Chỉnh sửa nhân viên</div>
+            <div class="card-body">
+                <form method="post" class="row g-3">
+                    <?= csrf_input() ?>
+                    <div class="col-md-4"><label class="form-label">Mã nhân viên</label><input class="form-control" name="employee_code" value="<?= e($form['employee_code']) ?>" required></div>
+                    <div class="col-md-8"><label class="form-label">Họ tên</label><input class="form-control" name="full_name" value="<?= e($form['full_name']) ?>" required></div>
+                    <div class="col-md-4"><label class="form-label">Tên đăng nhập</label><input class="form-control" name="username" value="<?= e($form['username']) ?>" required></div>
+                    <div class="col-md-4"><label class="form-label">Mật khẩu mới</label><input class="form-control" type="password" name="password" placeholder="Để trống nếu không đổi"></div>
+                    <div class="col-md-4 d-flex align-items-end"><div class="form-check form-switch mb-2"><input class="form-check-input" type="checkbox" name="is_active" <?= (int) $form['is_active'] === 1 ? 'checked' : '' ?>><label class="form-check-label">Hoạt động</label></div></div>
+                    <div class="col-md-6"><label class="form-label">Email</label><input class="form-control" type="email" name="email" value="<?= e($form['email'] ?? '') ?>"></div>
+                    <div class="col-md-6"><label class="form-label">Điện thoại</label><input class="form-control" name="phone" value="<?= e($form['phone'] ?? '') ?>"></div>
+                    <div class="col-md-6"><label class="form-label">Vai trò</label><select class="form-select" name="role_id" required><?php foreach ($roles as $role): ?><option value="<?= (int) $role['id'] ?>" <?= (int) $form['role_id'] === (int) $role['id'] ? 'selected' : '' ?>><?= e($role['display_name']) ?></option><?php endforeach; ?></select></div>
+                    <div class="col-md-6"><label class="form-label">Phòng ban</label><select class="form-select" name="department_id"><option value="">Chọn phòng ban</option><?php foreach ($departments as $department): ?><option value="<?= (int) $department['id'] ?>" <?= (string) ($form['department_id'] ?? '') === (string) $department['id'] ? 'selected' : '' ?>><?= e($department['name']) ?></option><?php endforeach; ?></select></div>
+                    <div class="col-12 d-flex gap-2"><button class="btn btn-primary" type="submit">Lưu thay đổi</button><a class="btn btn-outline-secondary" href="/ntn_erp/modules/users/index.php">Quay lại</a></div>
+                </form>
             </div>
-
-            <div class="card border-0 shadow-sm mb-3">
-                <div class="card-header bg-white fw-bold"><i class="fas fa-shield-alt me-2 text-success"></i>Phân quyền & Phòng ban</div>
-                <div class="card-body">
-                    <div class="row g-3">
-                        <div class="col-md-6">
-                            <label class="form-label fw-semibold">Phân quyền <span class="text-danger">*</span></label>
-                            <select name="role_id" class="form-select" required>
-                                <?php foreach ($roles as $r): ?>
-                                <option value="<?= $r['id'] ?>"
-                                    <?= (($_POST['role_id'] ?? $editUser['role_id']) == $r['id']) ? 'selected' : '' ?>>
-                                    <?= htmlspecialchars($r['display_name']) ?>
-                                </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <div class="col-md-6">
-                            <label class="form-label fw-semibold">Phòng ban</label>
-                            <select name="department_id" class="form-select">
-                                <option value="">-- Chọn phòng ban --</option>
-                                <?php foreach ($depts as $d): ?>
-                                <option value="<?= $d['id'] ?>"
-                                    <?= (($_POST['department_id'] ?? $editUser['department_id']) == $d['id']) ? 'selected' : '' ?>>
-                                    <?= htmlspecialchars($d['name']) ?>
-                                </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="mt-3 p-2 bg-light rounded">
-                        <small><i class="fas fa-info-circle text-info me-1"></i>
-                        Username: <code><?= htmlspecialchars($editUser['username']) ?></code>
-                        — Để đổi mật khẩu, dùng nút <strong>🔑 Đổi mật khẩu</strong> ở trang danh sách.</small>
-                    </div>
-                </div>
-            </div>
-
-            <div class="d-flex gap-2">
-                <button type="submit" class="btn btn-primary px-4"><i class="fas fa-save me-2"></i>Lưu thay đổi</button>
-                <a href="/ntn_erp/modules/users/index.php" class="btn btn-outline-secondary px-4">Huỷ</a>
-            </div>
-        </form>
+        </div>
     </div>
-</div>
 </div>
 <?php include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/footer.php'; ?>

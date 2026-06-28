@@ -1,9 +1,7 @@
-<?php
-declare(strict_types=1);
-?>
-</main>
-</div>
-</div>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="/ntn_erp/assets/js/main.js"></script>
+
+<?php include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/kpi_popup.php'; ?>
+
 </body>
 </html>

@@ -1,94 +1,267 @@
 <?php
-declare(strict_types=1);
-
-require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/auth.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/database.php';
+require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/auth.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/functions.php';
 
-requireRole(['director', 'accountant', 'manager']);
-ensurePostCsrf();
+// Chỉ Giám đốc & Kế toán được vào
+requireRole('director', 'accountant');
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'deactivate') {
-    $userId = (int) ($_POST['user_id'] ?? 0);
-    if ($userId <= 0) {
-        setFlash('danger', 'Nhân viên không hợp lệ.');
-        redirect('modules/users/index.php');
+$user = currentUser();
+$pdo  = getDBConnection();
+
+// Xử lý khoá / mở khoá tài khoản
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && verifyCSRF($_POST['csrf_token'] ?? '')) {
+    $action    = $_POST['action']    ?? '';
+    $target_id = (int)($_POST['user_id'] ?? 0);
+
+    // Không được khoá chính mình
+    if ($target_id && $target_id !== $user['id']) {
+        if ($action === 'lock') {
+            $pdo->prepare("UPDATE users SET is_active = 0 WHERE id = ?")->execute([$target_id]);
+            setFlash('warning', 'Đã khoá tài khoản.');
+        } elseif ($action === 'unlock') {
+            $pdo->prepare("UPDATE users SET is_active = 1 WHERE id = ?")->execute([$target_id]);
+            setFlash('success', 'Đã mở khoá tài khoản.');
+        } elseif ($action === 'delete') {
+            // Chỉ Giám đốc mới được xoá
+            if (hasRole('director')) {
+                $pdo->prepare("DELETE FROM users WHERE id = ?")->execute([$target_id]);
+                setFlash('success', 'Đã xoá tài khoản.');
+            } else {
+                setFlash('danger', 'Bạn không có quyền xoá tài khoản.');
+            }
+        }
     }
-
-    $statement = $pdo->prepare('UPDATE users SET is_active = 0 WHERE id = :id');
-    $statement->execute(['id' => $userId]);
-    setFlash('success', 'Đã vô hiệu hóa tài khoản nhân viên.');
-    redirect('modules/users/index.php');
+    header('Location: /ntn_erp/modules/users/index.php');
+    exit();
 }
 
-$search = trim((string) ($_GET['search'] ?? ''));
-$departmentFilter = trim((string) ($_GET['department_id'] ?? ''));
-$roleFilter = trim((string) ($_GET['role_id'] ?? ''));
-$statusFilter = trim((string) ($_GET['status'] ?? ''));
-$page = max(1, (int) ($_GET['page'] ?? 1));
-$perPage = 20;
-$offset = ($page - 1) * $perPage;
+// Lọc & tìm kiếm
+$search     = trim($_GET['search']  ?? '');
+$filterRole = $_GET['role']         ?? '';
+$filterDept = (int)($_GET['dept']   ?? 0);
 
-$where = [];
+$sql    = "SELECT u.*, r.name AS role, r.display_name AS role_name, d.name AS dept_name
+           FROM users u
+           JOIN roles r ON u.role_id = r.id
+           LEFT JOIN departments d ON u.department_id = d.id
+           WHERE 1=1 ";
 $params = [];
-if ($search !== '') {
-    $where[] = '(u.employee_code LIKE :search OR u.full_name LIKE :search OR u.phone LIKE :search OR u.email LIKE :search)';
-    $params['search'] = '%' . $search . '%';
-}
-if ($departmentFilter !== '' && ctype_digit($departmentFilter)) {
-    $where[] = 'u.department_id = :department_id';
-    $params['department_id'] = (int) $departmentFilter;
-}
-if ($roleFilter !== '' && ctype_digit($roleFilter)) {
-    $where[] = 'u.role_id = :role_id';
-    $params['role_id'] = (int) $roleFilter;
-}
-if ($statusFilter === 'active') {
-    $where[] = 'u.is_active = :active_status';
-    $params['active_status'] = 1;
-} elseif ($statusFilter === 'inactive') {
-    $where[] = 'u.is_active = :inactive_status';
-    $params['inactive_status'] = 0;
-}
 
-$whereSql = $where !== [] ? 'WHERE ' . implode(' AND ', $where) : '';
-$countSql = "SELECT COUNT(*) FROM users u {$whereSql}";
-$countStatement = $pdo->prepare($countSql);
-$countStatement->execute($params);
-$totalRows = (int) $countStatement->fetchColumn();
-$totalPages = (int) max(1, ceil($totalRows / $perPage));
-
-$listSql = "SELECT u.id, u.employee_code, u.full_name, u.phone, u.email, u.hire_date, u.is_active,
-                   r.name AS role_name, r.display_name AS role_display_name, d.name AS department_name
-            FROM users u
-            LEFT JOIN roles r ON r.id = u.role_id
-            LEFT JOIN departments d ON d.id = u.department_id
-            {$whereSql}
-            ORDER BY u.created_at DESC
-            LIMIT :limit OFFSET :offset";
-$listStatement = $pdo->prepare($listSql);
-foreach ($params as $key => $value) {
-    $listStatement->bindValue(':' . $key, $value);
+if ($search) {
+    $sql    .= " AND (u.full_name LIKE ? OR u.username LIKE ? OR u.employee_code LIKE ? OR u.email LIKE ?)";
+    $like    = "%$search%";
+    $params  = array_merge($params, [$like, $like, $like, $like]);
 }
-$listStatement->bindValue(':limit', $perPage, PDO::PARAM_INT);
-$listStatement->bindValue(':offset', $offset, PDO::PARAM_INT);
-$listStatement->execute();
-$users = $listStatement->fetchAll();
+if ($filterRole) {
+    $sql    .= " AND r.name = ?";
+    $params[] = $filterRole;
+}
+if ($filterDept) {
+    $sql    .= " AND u.department_id = ?";
+    $params[] = $filterDept;
+}
+$sql .= " ORDER BY u.is_active DESC, r.id ASC, u.full_name ASC";
 
-$departments = fetchAllSafe($pdo, 'SELECT id, name FROM departments ORDER BY name ASC');
-$roles = fetchAllSafe($pdo, 'SELECT id, name, display_name FROM roles ORDER BY display_name ASC');
+$stmt = $pdo->prepare($sql);
+$stmt->execute($params);
+$users = $stmt->fetchAll();
 
-$pageTitle = 'Danh sách nhân viên';
-$breadcrumbs = [
-    ['label' => 'Tổng quan', 'url' => 'dashboard.php'],
-    ['label' => 'Nhân sự'],
-    ['label' => 'Danh sách nhân viên'],
-];
+// Danh sách phòng ban cho filter
+$depts = $pdo->query("SELECT * FROM departments ORDER BY name")->fetchAll();
+$roles = $pdo->query("SELECT * FROM roles ORDER BY id")->fetchAll();
 
-require __DIR__ . '/../../includes/header.php';
-require __DIR__ . '/../../includes/sidebar.php';
+$csrf = generateCSRF();
+include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/header.php';
+include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/sidebar.php';
 ?>
-<div class="card content-card mb-4"><div class="card-body p-4"><div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4"><div><h1 class="h4 mb-1">Danh sách nhân viên</h1><p class="text-muted mb-0">Quản lý hồ sơ, trạng thái và phân quyền nội bộ.</p></div><a href="<?= e(basePath('modules/users/create.php')) ?>" class="btn btn-primary"><i class="fa-solid fa-user-plus me-2"></i>Thêm nhân viên</a></div><form method="get" class="row g-3 align-items-end"><div class="col-lg-4"><label class="form-label">Tìm kiếm</label><input type="text" name="search" class="form-control" value="<?= e($search) ?>" placeholder="Mã NV, họ tên, SĐT, email"></div><div class="col-lg-2"><label class="form-label">Phòng ban</label><select name="department_id" class="form-select"><option value="">Tất cả</option><?php foreach ($departments as $department): ?><option value="<?= e((string) $department['id']) ?>" <?= $departmentFilter === (string) $department['id'] ? 'selected' : '' ?>><?= e($department['name']) ?></option><?php endforeach; ?></select></div><div class="col-lg-2"><label class="form-label">Chức vụ</label><select name="role_id" class="form-select"><option value="">Tất cả</option><?php foreach ($roles as $role): ?><option value="<?= e((string) $role['id']) ?>" <?= $roleFilter === (string) $role['id'] ? 'selected' : '' ?>><?= e($role['display_name']) ?></option><?php endforeach; ?></select></div><div class="col-lg-2"><label class="form-label">Trạng thái</label><select name="status" class="form-select"><option value="">Tất cả</option><option value="active" <?= $statusFilter === 'active' ? 'selected' : '' ?>>Đang làm việc</option><option value="inactive" <?= $statusFilter === 'inactive' ? 'selected' : '' ?>>Vô hiệu hóa</option></select></div><div class="col-lg-2 d-grid"><button type="submit" class="btn btn-outline-primary"><i class="fa-solid fa-filter me-2"></i>Lọc dữ liệu</button></div></form></div></div>
 
-<div class="card content-card"><div class="card-body p-0"><div class="table-responsive"><table class="table table-hover align-middle mb-0"><thead class="table-light"><tr><th>Mã NV</th><th>Họ tên</th><th>Chức vụ</th><th>Phòng ban</th><th>SĐT</th><th>Email</th><th>Ngày vào làm</th><th>Trạng thái</th><th class="text-end">Actions</th></tr></thead><tbody><?php if ($users === []): ?><tr><td colspan="9" class="text-center py-4 text-muted">Không tìm thấy nhân viên phù hợp.</td></tr><?php else: ?><?php foreach ($users as $user): ?><tr><td class="fw-semibold"><?= e($user['employee_code'] ?? '—') ?></td><td><?= e($user['full_name'] ?? '—') ?></td><td><span class="badge text-bg-<?= e(roleBadgeClass((string) ($user['role_name'] ?? 'employee'))) ?>"><?= e($user['role_display_name'] ?? roleLabel((string) ($user['role_name'] ?? 'employee'))) ?></span></td><td><?= e($user['department_name'] ?? '—') ?></td><td><?= e($user['phone'] ?? '—') ?></td><td><?= e($user['email'] ?? '—') ?></td><td><?= e(formatDate($user['hire_date'] ?? null)) ?></td><td><?php if ((int) ($user['is_active'] ?? 0) === 1): ?><span class="badge text-bg-success">Đang làm việc</span><?php else: ?><span class="badge text-bg-secondary">Vô hiệu hóa</span><?php endif; ?></td><td class="text-end"><div class="btn-group"><a href="<?= e(basePath('modules/users/profile.php')) ?>?user_id=<?= e((string) $user['id']) ?>" class="btn btn-sm btn-outline-info">Xem</a><a href="<?= e(basePath('modules/users/edit.php')) ?>?id=<?= e((string) $user['id']) ?>" class="btn btn-sm btn-outline-primary">Sửa</a><?php if ((int) ($user['is_active'] ?? 0) === 1): ?><form method="post" onsubmit="return confirm('Bạn chắc chắn muốn vô hiệu hóa nhân viên này?');"><?= csrf_input() ?><input type="hidden" name="action" value="deactivate"><input type="hidden" name="user_id" value="<?= e((string) $user['id']) ?>"><button type="submit" class="btn btn-sm btn-outline-danger">Vô hiệu hóa</button></form><?php endif; ?></div></td></tr><?php endforeach; ?><?php endif; ?></tbody></table></div></div><div class="card-footer bg-white d-flex justify-content-between align-items-center flex-wrap gap-3"><div class="text-muted">Hiển thị <?= count($users) ?> / <?= number_format($totalRows) ?> nhân viên</div><?= paginationLinks($page, $totalPages, 'modules/users/index.php', ['search' => $search, 'department_id' => $departmentFilter, 'role_id' => $roleFilter, 'status' => $statusFilter]) ?></div></div>
-<?php require __DIR__ . '/../../includes/footer.php'; ?>
+<div class="main-content">
+<div class="container-fluid py-4">
+
+    <!-- Tiêu đề -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h4 class="mb-1">👥 Quản lý Tài khoản</h4>
+            <p class="text-muted mb-0">Tổng: <strong><?= count($users) ?></strong> tài khoản</p>
+        </div>
+        <div class="d-flex gap-2">
+            <a href="/ntn_erp/modules/users/import_excel.php" class="btn btn-outline-success">
+                <i class="fas fa-file-excel me-2"></i>Import Excel
+            </a>
+            <a href="/ntn_erp/modules/users/create.php" class="btn btn-primary">
+                <i class="fas fa-user-plus me-2"></i>Tạo tài khoản mới
+            </a>
+        </div>
+    </div>
+
+    <?php showFlash(); ?>
+
+    <!-- Bộ lọc tìm kiếm -->
+    <div class="card border-0 shadow-sm mb-3">
+        <div class="card-body py-3">
+            <form method="GET" class="row g-2 align-items-end">
+                <div class="col-md-4">
+                    <label class="form-label small fw-semibold mb-1">🔍 Tìm kiếm</label>
+                    <input type="text" name="search" class="form-control form-control-sm"
+                           placeholder="Tên, username, mã NV, email..."
+                           value="<?= htmlspecialchars($search) ?>">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small fw-semibold mb-1">🎭 Phân quyền</label>
+                    <select name="role" class="form-select form-select-sm">
+                        <option value="">-- Tất cả --</option>
+                        <?php foreach ($roles as $r): ?>
+                        <option value="<?= $r['name'] ?>" <?= $filterRole === $r['name'] ? 'selected' : '' ?>>
+                            <?= htmlspecialchars($r['display_name']) ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small fw-semibold mb-1">🏢 Phòng ban</label>
+                    <select name="dept" class="form-select form-select-sm">
+                        <option value="">-- Tất cả --</option>
+                        <?php foreach ($depts as $d): ?>
+                        <option value="<?= $d['id'] ?>" <?= $filterDept == $d['id'] ? 'selected' : '' ?>>
+                            <?= htmlspecialchars($d['name']) ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-md-2 d-flex gap-2">
+                    <button type="submit" class="btn btn-primary btn-sm w-100">Lọc</button>
+                    <a href="/ntn_erp/modules/users/index.php" class="btn btn-outline-secondary btn-sm">↺</a>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Bảng danh sách -->
+    <div class="card border-0 shadow-sm">
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead class="table-dark">
+                        <tr>
+                            <th>Nhân viên</th>
+                            <th>Username</th>
+                            <th>Phân quyền</th>
+                            <th>Phòng ban</th>
+                            <th>Liên hệ</th>
+                            <th>Trạng thái</th>
+                            <th class="text-center">Thao tác</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($users as $u): ?>
+                    <?php $badge = getRoleBadge($u['role']); ?>
+                    <tr class="<?= !$u['is_active'] ? 'table-secondary text-muted' : '' ?>">
+                        <td>
+                            <div class="d-flex align-items-center gap-2">
+                                <!-- Avatar chữ cái đầu -->
+                                <div class="avatar-circle bg-<?= $badge['class'] ?>">
+                                    <?= mb_substr($u['full_name'], 0, 1) ?>
+                                </div>
+                                <div>
+                                    <div class="fw-semibold"><?= htmlspecialchars($u['full_name']) ?></div>
+                                    <small class="text-muted"><?= htmlspecialchars($u['employee_code']) ?></small>
+                                </div>
+                            </div>
+                        </td>
+                        <td><code><?= htmlspecialchars($u['username']) ?></code></td>
+                        <td>
+                            <span class="badge bg-<?= $badge['class'] ?>">
+                                <?= $badge['icon'] ?> <?= $badge['label'] ?>
+                            </span>
+                        </td>
+                        <td><small><?= htmlspecialchars($u['dept_name'] ?? '-') ?></small></td>
+                        <td>
+                            <small class="d-block"><?= htmlspecialchars($u['email'] ?? '-') ?></small>
+                            <small class="text-muted"><?= htmlspecialchars($u['phone'] ?? '') ?></small>
+                        </td>
+                        <td>
+                            <?php if ($u['is_active']): ?>
+                                <span class="badge bg-success">✅ Hoạt động</span>
+                            <?php else: ?>
+                                <span class="badge bg-secondary">🔒 Đã khoá</span>
+                            <?php endif; ?>
+                        </td>
+                        <td class="text-center">
+                            <div class="d-flex justify-content-center gap-1">
+				<!-- Nút Hồ sơ (thêm trước nút Sửa) -->
+				<a href="/ntn_erp/modules/users/profile.php?id=<?= $u['id'] ?>"
+  					class="btn btn-sm btn-outline-success" title="Hồ sơ nhân viên">
+  					  <i class="fas fa-id-card"></i>
+				</a>
+                                <!-- Sửa -->
+                                <a href="/ntn_erp/modules/users/edit.php?id=<?= $u['id'] ?>"
+                                   class="btn btn-sm btn-outline-primary" title="Chỉnh sửa">
+                                    <i class="fas fa-edit"></i>
+                                </a>
+                                <!-- Đổi mật khẩu -->
+                                <a href="/ntn_erp/modules/users/change_password.php?id=<?= $u['id'] ?>"
+                                   class="btn btn-sm btn-outline-warning" title="Đổi mật khẩu">
+                                    <i class="fas fa-key"></i>
+                                </a>
+                                <?php if ($u['id'] !== $user['id']): ?>
+                                <!-- Khoá / Mở khoá -->
+                                <form method="POST" class="d-inline">
+                                    <input type="hidden" name="csrf_token" value="<?= $csrf ?>">
+                                    <input type="hidden" name="user_id" value="<?= $u['id'] ?>">
+                                    <?php if ($u['is_active']): ?>
+                                        <input type="hidden" name="action" value="lock">
+                                        <button type="submit" class="btn btn-sm btn-outline-secondary" title="Khoá tài khoản"
+                                                onclick="return confirm('Khoá tài khoản <?= htmlspecialchars($u['full_name']) ?>?')">
+                                            <i class="fas fa-lock"></i>
+                                        </button>
+                                    <?php else: ?>
+                                        <input type="hidden" name="action" value="unlock">
+                                        <button type="submit" class="btn btn-sm btn-outline-success" title="Mở khoá">
+                                            <i class="fas fa-lock-open"></i>
+                                        </button>
+                                    <?php endif; ?>
+                                </form>
+                                <!-- Xoá - chỉ Giám đốc -->
+                                <?php if (hasRole('director')): ?>
+                                <form method="POST" class="d-inline">
+                                    <input type="hidden" name="csrf_token" value="<?= $csrf ?>">
+                                    <input type="hidden" name="user_id" value="<?= $u['id'] ?>">
+                                    <input type="hidden" name="action" value="delete">
+                                    <button type="submit" class="btn btn-sm btn-outline-danger" title="Xoá tài khoản"
+                                            onclick="return confirm('⚠️ Xoá tài khoản <?= htmlspecialchars($u['full_name']) ?>?\nHành động này không thể hoàn tác!')">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                </form>
+                                <?php endif; ?>
+                                <?php endif; ?>
+                            </div>
+                        </td>
+                    </tr>
+                    <?php endforeach; ?>
+                    <?php if (empty($users)): ?>
+                    <tr><td colspan="7" class="text-center text-muted py-5">
+                        <i class="fas fa-search fa-2x mb-2 d-block"></i>
+                        Không tìm thấy tài khoản nào
+                    </td></tr>
+                    <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+</div>
+</div>
+
+<style>
+.avatar-circle {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: white; font-weight: 700; font-size: 15px;
+    flex-shrink: 0;
+}
+</style>
+
+<?php include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/footer.php'; ?>

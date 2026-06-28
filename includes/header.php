@@ -1,47 +1,55 @@
 <?php
-declare(strict_types=1);
-$pageTitle = $pageTitle ?? 'NTN ERP';
-$currentUser = currentUser();
+if (session_status() === PHP_SESSION_NONE) {
+    require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/auth.php';
+}
+$user = currentUser();
 ?>
 <!DOCTYPE html>
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?= e($pageTitle) ?> | NTN ERP</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css" rel="stylesheet">
-    <style>
-        :root { --erp-primary: #0f4c81; --erp-sidebar: #0d1b2a; --erp-bg: #f4f7fb; }
-        body { font-family: 'Inter', sans-serif; background: var(--erp-bg); }
-        .topbar { background: linear-gradient(90deg, #0f4c81, #173f6d); }
-        .sidebar { min-height: calc(100vh - 56px); background: var(--erp-sidebar); }
-        .sidebar .nav-link { color: rgba(255,255,255,.82); border-radius: .65rem; margin-bottom: .35rem; }
-        .sidebar .nav-link.active, .sidebar .nav-link:hover { background: rgba(255,255,255,.12); color: #fff; }
-        .stat-card { border: none; border-radius: 1rem; box-shadow: 0 .5rem 1.5rem rgba(15, 76, 129, .08); }
-        .content-card { border: 0; border-radius: 1rem; box-shadow: 0 .5rem 1.5rem rgba(20, 46, 80, .06); }
-        .avatar-circle { width: 72px; height: 72px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1.5rem; background: rgba(15,76,129,.12); color: var(--erp-primary); }
-        .table thead th { white-space: nowrap; }
-    </style>
+    <title>ERP System</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="/ntn_erp/assets/css/style.css" rel="stylesheet">
 </head>
 <body>
-<nav class="navbar navbar-expand-lg navbar-dark topbar shadow-sm sticky-top">
-    <div class="container-fluid px-4">
-        <a class="navbar-brand fw-semibold" href="<?= e(basePath('dashboard.php')) ?>">🏭 NTN ERP</a>
-        <div class="d-flex align-items-center gap-3 text-white">
-            <div class="text-end d-none d-md-block">
-                <div class="fw-semibold"><?= e($currentUser['name'] ?? 'Người dùng') ?></div>
-                <small class="text-white-50"><?= e(roleLabel((string) ($currentUser['role'] ?? 'employee'))) ?></small>
+<!-- Top Navbar -->
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top" style="z-index:1030;">
+    <div class="container-fluid">
+        <button class="btn btn-sm text-white me-2" id="sidebarToggle">
+            <i class="fas fa-bars"></i>
+        </button>
+        <a class="navbar-brand fw-bold" href="/ntn_erp/dashboard.php">🏢 ERP System</a>
+        <div class="ms-auto d-flex align-items-center gap-3">
+            <!-- Thông báo -->
+            <div class="dropdown">
+                <button class="btn btn-sm btn-outline-light position-relative" data-bs-toggle="dropdown">
+                    <i class="fas fa-bell"></i>
+                    <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" id="notifCount" style="display:none;">0</span>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end" style="min-width:300px;" id="notifDropdown">
+                    <li><div class="dropdown-header">Thông báo</div></li>
+                    <li><div class="dropdown-item text-muted small text-center py-3">Không có thông báo mới</div></li>
+                </ul>
             </div>
-            <form method="post" action="<?= e(basePath('logout.php')) ?>" class="mb-0">
-                <?= csrf_input() ?>
-                <button type="submit" class="btn btn-sm btn-outline-light"><i class="fa-solid fa-right-from-bracket me-1"></i>Đăng xuất</button>
-            </form>
+            <!-- User menu -->
+            <div class="dropdown">
+                <button class="btn btn-sm btn-outline-light dropdown-toggle" data-bs-toggle="dropdown">
+                    <i class="fas fa-user-circle me-1"></i>
+                    <?= htmlspecialchars($user['full_name']) ?>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    <li><div class="dropdown-header">
+                        <?php $badge = getRoleBadge($user['role']); ?>
+                        <span class="badge bg-<?= $badge['class'] ?>"><?= $badge['icon'] ?> <?= $badge['label'] ?></span>
+                        <div class="text-muted small mt-1"><?= htmlspecialchars($user['employee_code']) ?></div>
+                    </div></li>
+                    <li><hr class="dropdown-divider"></li>
+                    <li><a class="dropdown-item" href="/ntn_erp/logout.php"><i class="fas fa-sign-out-alt me-2 text-danger"></i>Đăng xuất</a></li>
+                </ul>
+            </div>
         </div>
     </div>
 </nav>
-<div class="container-fluid">
-    <div class="row g-0">

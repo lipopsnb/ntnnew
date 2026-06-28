@@ -1,104 +1,129 @@
 <?php
-require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/database.php';
+/**
+ * API: Tạo hóa đơn (hỗ trợ nhiều phiếu giao hàng qua invoice_deliveries).
+ * POST: csrf_token, customer_id, invoice_date, due_date, tax_rate (0 hoặc 8),
+ *       delivery_ids[] (mảng ID phiếu giao), note
+ */
 require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/auth.php';
+require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/database.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/functions.php';
-header('Content-Type: application/json');
-requireLogin();
-requireRole('director','accountant','manager');
+require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/module_helpers.php';
 
-$pdo  = getDBConnection();
-$user = currentUser();
+header('Content-Type: application/json; charset=utf-8');
+requireRole('director', 'accountant', 'manager');
 
-if (!verifyCSRF($_POST['csrf_token'] ?? '')) {
-    echo json_encode(['ok'=>false,'msg'=>'CSRF invalid']); exit;
+$pdo = erp_db();
+
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    echo json_encode(['ok' => false, 'msg' => 'Method not allowed']);
+    exit;
 }
 
-$customerId  = (int)($_POST['customer_id']  ?? 0);
-$invoiceDate = trim($_POST['invoice_date']  ?? date('Y-m-d'));
-$dueDate     = trim($_POST['due_date']      ?? '') ?: null;
-$vatRate     = (float)($_POST['vat_rate']   ?? 0);
-$note        = trim($_POST['note']          ?? '') ?: null;
-$deliveryId  = (int)($_POST['delivery_id']  ?? 0) ?: null;
-$items       = $_POST['items'] ?? [];
-
-if (!$customerId || empty($items)) {
-    echo json_encode(['ok'=>false,'msg'=>'Thiếu khách hàng hoặc sản phẩm']); exit;
+if (!erp_validate_csrf($_POST['csrf_token'] ?? null)) {
+    echo json_encode(['ok' => false, 'msg' => 'CSRF token không hợp lệ']);
+    exit;
 }
 
-$validItems = [];
-foreach ($items as $it) {
-    $pcId  = (int)($it['product_code_id'] ?? 0);
-    $qty   = (float)($it['quantity']      ?? 0);
-    $price = (float)($it['unit_price']    ?? 0);
-    if ($pcId && $qty > 0) {
-        $validItems[] = [
-            'product_code_id' => $pcId,
-            'description'     => trim($it['description'] ?? ''),
-            'unit'            => trim($it['unit'] ?? ''),
-            'quantity'        => $qty,
-            'unit_price'      => $price,
-            'total_price'     => round($qty * $price),
-        ];
-    }
+$customerId  = (int) ($_POST['customer_id']  ?? 0);
+$invoiceDate = trim((string) ($_POST['invoice_date'] ?? date('Y-m-d')));
+$dueDate     = trim((string) ($_POST['due_date'] ?? '')) ?: null;
+$taxRate     = (int) ($_POST['tax_rate'] ?? 0);
+$note        = trim((string) ($_POST['note'] ?? '')) ?: null;
+$deliveryIds = array_map('intval', (array) ($_POST['delivery_ids'] ?? []));
+$deliveryIds = array_filter($deliveryIds, static fn(int $v): bool => $v > 0);
+$deliveryIds = array_values(array_unique($deliveryIds));
+
+if ($customerId <= 0 || $invoiceDate === '' || empty($deliveryIds)) {
+    echo json_encode(['ok' => false, 'msg' => 'Thiếu khách hàng, ngày hóa đơn hoặc phiếu giao hàng']);
+    exit;
 }
-if (empty($validItems)) {
-    echo json_encode(['ok'=>false,'msg'=>'Không có dòng hợp lệ']); exit;
+
+// Chỉ cho phép VAT 0% hoặc 8%
+if (!in_array($taxRate, [0, 8], true)) {
+    echo json_encode(['ok' => false, 'msg' => 'Thuế suất chỉ được phép là 0% hoặc 8%']);
+    exit;
 }
 
 try {
     $pdo->beginTransaction();
 
-    // Sinh số HĐ INV-YYYYMMDD-XXX
-    $pdo->prepare("
-        INSERT INTO document_sequences (doc_type, doc_date, last_seq) VALUES ('INV',?,1)
-        ON DUPLICATE KEY UPDATE last_seq = last_seq + 1
-    ")->execute([$invoiceDate]);
-    $seq = $pdo->query("
-        SELECT last_seq FROM document_sequences WHERE doc_type='INV' AND doc_date='$invoiceDate'
-    ")->fetchColumn();
-    $invoiceNo = 'INV-' . date('Ymd', strtotime($invoiceDate)) . '-' . str_pad($seq, 3, '0', STR_PAD_LEFT);
-
-    $subtotal    = array_sum(array_column($validItems, 'total_price'));
-    $vatAmount   = round($subtotal * $vatRate / 100);
-    $totalAmount = $subtotal + $vatAmount;
-
-    // Insert invoice header
-    $pdo->prepare("
-        INSERT INTO invoices
-            (invoice_no, invoice_date, due_date, customer_id,
-             subtotal, vat_rate, vat_amount, total_amount,
-             delivery_id, note, status, created_by)
-        VALUES (?,?,?,?,?,?,?,?,?,?,'unpaid',?)
-    ")->execute([
-        $invoiceNo, $invoiceDate, $dueDate, $customerId,
-        $subtotal, $vatRate, $vatAmount, $totalAmount,
-        $deliveryId, $note, $user['id']
-    ]);
-    $invoiceId = $pdo->lastInsertId();
-
-    // Insert items
-    $stmtItem = $pdo->prepare("
-        INSERT INTO invoice_items
-            (invoice_id, product_code_id, description, unit, quantity, unit_price, total_price)
-        VALUES (?,?,?,?,?,?,?)
+    // Xác nhận tất cả delivery_ids thuộc về customer và chưa có trong hóa đơn nào
+    $placeholders = implode(',', array_fill(0, count($deliveryIds), '?'));
+    $checkStmt = $pdo->prepare("
+        SELECT d.id
+        FROM deliveries d
+        LEFT JOIN invoice_deliveries idl ON idl.delivery_id = d.id
+        WHERE d.id IN ($placeholders)
+          AND d.customer_id = ?
+          AND idl.id IS NULL
     ");
-    foreach ($validItems as $it) {
-        $stmtItem->execute([
-            $invoiceId, $it['product_code_id'], $it['description'],
-            $it['unit'], $it['quantity'], $it['unit_price'], $it['total_price']
-        ]);
+    $checkStmt->execute([...$deliveryIds, $customerId]);
+    $validIds = array_column($checkStmt->fetchAll(PDO::FETCH_ASSOC), 'id');
+
+    if (count($validIds) !== count($deliveryIds)) {
+        $pdo->rollBack();
+        echo json_encode(['ok' => false, 'msg' => 'Một hoặc nhiều phiếu giao hàng không hợp lệ hoặc đã được lập hóa đơn']);
+        exit;
     }
 
-    // Cập nhật status biên bản → invoiced
-    if ($deliveryId) {
-        $pdo->prepare("UPDATE deliveries SET status='invoiced' WHERE id=?")->execute([$deliveryId]);
+    // Lấy tất cả delivery_items của các phiếu đã chọn
+    $itemStmt = $pdo->prepare("
+        SELECT di.qty_delivered, di.unit_price, di.amount
+        FROM delivery_items di
+        WHERE di.delivery_id IN ($placeholders)
+    ");
+    $itemStmt->execute($deliveryIds);
+    $allItems = $itemStmt->fetchAll(PDO::FETCH_ASSOC);
+
+    if (empty($allItems)) {
+        $pdo->rollBack();
+        echo json_encode(['ok' => false, 'msg' => 'Các phiếu giao hàng chưa có dòng sản phẩm']);
+        exit;
+    }
+
+    $subtotal  = array_sum(array_column($allItems, 'amount'));
+    $taxAmount = round($subtotal * $taxRate / 100, 2);
+    $total     = $subtotal + $taxAmount;
+
+    $invoiceCode = erp_generate_daily_code($pdo, 'invoices', 'invoice_code', 'INV', $invoiceDate);
+
+    // delivery_id backward compat: dùng delivery đầu tiên nếu chỉ có 1
+    $backCompatDeliveryId = count($deliveryIds) === 1 ? $deliveryIds[0] : null;
+
+    $status = 'unpaid';
+
+    $insInvoice = $pdo->prepare("
+        INSERT INTO invoices
+            (invoice_code, delivery_id, customer_id, invoice_date, due_date,
+             subtotal, tax_rate, tax_amount, total_amount, paid_amount, status, note, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+    ");
+    $insInvoice->execute([
+        $invoiceCode, $backCompatDeliveryId, $customerId, $invoiceDate, $dueDate,
+        $subtotal, $taxRate, $taxAmount, $total, $status, $note,
+        erp_current_user_id() ?: null,
+    ]);
+    $invoiceId = (int) $pdo->lastInsertId();
+
+    // Ghi invoice_deliveries
+    $insId = $pdo->prepare('INSERT INTO invoice_deliveries (invoice_id, delivery_id) VALUES (?, ?)');
+    foreach ($deliveryIds as $dlId) {
+        $insId->execute([$invoiceId, $dlId]);
     }
 
     $pdo->commit();
-    echo json_encode(['ok'=>true,'msg'=>'Đã tạo hoá đơn','invoice_no'=>$invoiceNo,'id'=>$invoiceId]);
+
+    echo json_encode([
+        'ok'           => true,
+        'msg'          => 'Đã tạo hóa đơn ' . $invoiceCode,
+        'invoice_code' => $invoiceCode,
+        'id'           => $invoiceId,
+    ], JSON_UNESCAPED_UNICODE);
 
 } catch (Throwable $e) {
-    $pdo->rollBack();
-    error_log($e->getMessage());
-    echo json_encode(['ok'=>false,'msg'=>'Lỗi hệ thống: '.$e->getMessage()]);
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
+    error_log('save_invoice error: ' . $e->getMessage());
+    echo json_encode(['ok' => false, 'msg' => 'Lỗi hệ thống: ' . $e->getMessage()]);
 }

@@ -252,25 +252,28 @@ CREATE TABLE IF NOT EXISTS warehouse_receipts (
     receipt_code VARCHAR(30) NOT NULL,
     job_order_id BIGINT UNSIGNED NOT NULL,
     receipt_date DATE NOT NULL,
-    received_by INT UNSIGNED DEFAULT NULL,
+    received_by VARCHAR(100) DEFAULT NULL,
     note VARCHAR(255) DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_warehouse_receipts_code (receipt_code),
     KEY idx_warehouse_receipts_job_order_id (job_order_id),
-    KEY idx_warehouse_receipts_received_by (received_by),
-    CONSTRAINT fk_warehouse_receipts_job_order FOREIGN KEY (job_order_id) REFERENCES job_orders(id) ON UPDATE CASCADE ON DELETE RESTRICT,
-    CONSTRAINT fk_warehouse_receipts_received_by FOREIGN KEY (received_by) REFERENCES users(id) ON UPDATE CASCADE ON DELETE SET NULL
+    CONSTRAINT fk_warehouse_receipts_job_order FOREIGN KEY (job_order_id) REFERENCES job_orders(id) ON UPDATE CASCADE ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS warehouse_receipt_items (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     receipt_id BIGINT UNSIGNED NOT NULL,
+    job_order_item_id BIGINT UNSIGNED DEFAULT NULL,
     product_code_id INT UNSIGNED NOT NULL,
     qty DECIMAL(12,2) NOT NULL DEFAULT 0,
     note VARCHAR(255) DEFAULT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     KEY idx_warehouse_receipt_items_receipt_id (receipt_id),
+    KEY idx_warehouse_receipt_items_job_order_item_id (job_order_item_id),
     KEY idx_warehouse_receipt_items_product_code_id (product_code_id),
     CONSTRAINT fk_warehouse_receipt_items_receipt FOREIGN KEY (receipt_id) REFERENCES warehouse_receipts(id) ON UPDATE CASCADE ON DELETE CASCADE,
+    CONSTRAINT fk_warehouse_receipt_items_job_order_item FOREIGN KEY (job_order_item_id) REFERENCES job_order_items(id) ON UPDATE CASCADE ON DELETE SET NULL,
     CONSTRAINT fk_warehouse_receipt_items_product_code FOREIGN KEY (product_code_id) REFERENCES product_codes(id) ON UPDATE CASCADE ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -279,14 +282,13 @@ CREATE TABLE IF NOT EXISTS warehouse_outputs (
     output_code VARCHAR(30) NOT NULL,
     job_order_id BIGINT UNSIGNED NOT NULL,
     output_date DATE NOT NULL,
-    output_by INT UNSIGNED DEFAULT NULL,
+    output_by VARCHAR(100) DEFAULT NULL,
     note VARCHAR(255) DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_warehouse_outputs_code (output_code),
     KEY idx_warehouse_outputs_job_order_id (job_order_id),
-    KEY idx_warehouse_outputs_output_by (output_by),
-    CONSTRAINT fk_warehouse_outputs_job_order FOREIGN KEY (job_order_id) REFERENCES job_orders(id) ON UPDATE CASCADE ON DELETE RESTRICT,
-    CONSTRAINT fk_warehouse_outputs_output_by FOREIGN KEY (output_by) REFERENCES users(id) ON UPDATE CASCADE ON DELETE SET NULL
+    CONSTRAINT fk_warehouse_outputs_job_order FOREIGN KEY (job_order_id) REFERENCES job_orders(id) ON UPDATE CASCADE ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS warehouse_output_items (
@@ -297,6 +299,7 @@ CREATE TABLE IF NOT EXISTS warehouse_output_items (
     qty_ok DECIMAL(12,2) NOT NULL DEFAULT 0,
     qty_ng DECIMAL(12,2) NOT NULL DEFAULT 0,
     note VARCHAR(255) DEFAULT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     KEY idx_warehouse_output_items_output_id (output_id),
     KEY idx_warehouse_output_items_job_order_item_id (job_order_item_id),
     KEY idx_warehouse_output_items_product_code_id (product_code_id),
@@ -317,6 +320,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
     photo_url VARCHAR(255) DEFAULT NULL,
     created_by INT UNSIGNED DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_deliveries_code (delivery_code),
     KEY idx_deliveries_job_order_id (job_order_id),
     KEY idx_deliveries_customer_id (customer_id),
@@ -333,6 +337,9 @@ CREATE TABLE IF NOT EXISTS delivery_items (
     product_code_id INT UNSIGNED NOT NULL,
     qty_delivered DECIMAL(12,2) NOT NULL DEFAULT 0,
     unit_price DECIMAL(15,2) NOT NULL DEFAULT 0,
+    amount DECIMAL(15,2) NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_delivery_items_delivery_id (delivery_id),
     KEY idx_delivery_items_job_order_item_id (job_order_item_id),
     KEY idx_delivery_items_product_code_id (product_code_id),
@@ -357,6 +364,7 @@ CREATE TABLE IF NOT EXISTS invoices (
     note VARCHAR(255) DEFAULT NULL,
     created_by INT UNSIGNED DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_invoices_code (invoice_code),
     KEY idx_invoices_delivery_id (delivery_id),
     KEY idx_invoices_customer_id (customer_id),
@@ -364,6 +372,16 @@ CREATE TABLE IF NOT EXISTS invoices (
     CONSTRAINT fk_invoices_delivery FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON UPDATE CASCADE ON DELETE SET NULL,
     CONSTRAINT fk_invoices_customer FOREIGN KEY (customer_id) REFERENCES customers(id) ON UPDATE CASCADE ON DELETE RESTRICT,
     CONSTRAINT fk_invoices_created_by FOREIGN KEY (created_by) REFERENCES users(id) ON UPDATE CASCADE ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS invoice_deliveries (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    invoice_id BIGINT UNSIGNED NOT NULL,
+    delivery_id BIGINT UNSIGNED NOT NULL,
+    UNIQUE KEY uk_invoice_deliveries (invoice_id, delivery_id),
+    KEY idx_invoice_deliveries_delivery_id (delivery_id),
+    CONSTRAINT fk_invoice_deliveries_invoice FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON UPDATE CASCADE ON DELETE CASCADE,
+    CONSTRAINT fk_invoice_deliveries_delivery FOREIGN KEY (delivery_id) REFERENCES deliveries(id) ON UPDATE CASCADE ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS invoice_payments (

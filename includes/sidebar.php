@@ -138,15 +138,73 @@ $sidebarUser = currentUser();
         <?php if (hasRole('director','accountant','warehouse','production','manager')): ?>
         <li class="nav-section">KHO & SẢN XUẤT</li>
         <li class="nav-item">
-            <a class="nav-link <?= isActive('/warehouse/') ?>"
+            <a class="nav-link <?= isActive('/modules/warehouse/') ?>"
                href="/ntn_erp/modules/warehouse/index.php">
                 <i class="fas fa-boxes"></i> <span>Quản lý kho</span>
             </a>
         </li>
         <li class="nav-item">
-            <a class="nav-link <?= isActive('/production/') ?>"
+            <a class="nav-link <?= isActive('/warehouse/receipt') ?>"
+               href="/ntn_erp/modules/warehouse/receipt.php">
+                <i class="fas fa-arrow-down"></i> <span>Nhập kho</span>
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link <?= isActive('/warehouse/output') ?>"
+               href="/ntn_erp/modules/warehouse/output.php">
+                <i class="fas fa-arrow-up"></i> <span>Xuất kho</span>
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link <?= isActive('/modules/production/') ?>"
                href="/ntn_erp/modules/production/index.php">
                 <i class="fas fa-industry"></i> <span>Sản xuất</span>
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link <?= isActive('/modules/delivery/') ?>"
+               href="/ntn_erp/modules/delivery/index.php">
+                <i class="fas fa-truck"></i> <span>Giao hàng</span>
+            </a>
+        </li>
+        <?php endif; ?>
+
+        <!-- ==================== HÓA ĐƠN & CÔNG NỢ ==================== -->
+        <?php if (hasRole('director','accountant','manager')): ?>
+        <li class="nav-section">HÓA ĐƠN & CÔNG NỢ</li>
+        <li class="nav-item">
+            <a class="nav-link <?= isActive('/modules/invoice/') ?>"
+               href="/ntn_erp/modules/invoice/index.php">
+                <i class="fas fa-file-invoice"></i> <span>Hóa đơn</span>
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link <?= isActive('/modules/invoice/payments') ?>"
+               href="/ntn_erp/modules/invoice/payments.php">
+                <i class="fas fa-hand-holding-usd"></i> <span>Thu tiền</span>
+            </a>
+        </li>
+        <?php endif; ?>
+
+        <!-- ==================== DANH MỤC ==================== -->
+        <?php if (hasRole('director','accountant','manager')): ?>
+        <li class="nav-section">DANH MỤC</li>
+        <li class="nav-item">
+            <a class="nav-link <?= isActive('/modules/master/customers') ?>"
+               href="/ntn_erp/modules/master/customers.php">
+                <i class="fas fa-building"></i> <span>Khách hàng</span>
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link <?= isActive('/modules/master/product_codes') ?>"
+               href="/ntn_erp/modules/master/product_codes.php">
+                <i class="fas fa-barcode"></i> <span>Mã sản phẩm</span>
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link <?= isActive('/modules/master/prices') ?>"
+               href="/ntn_erp/modules/master/prices.php">
+                <i class="fas fa-tags"></i> <span>Bảng giá</span>
             </a>
         </li>
         <?php endif; ?>

@@ -25,10 +25,18 @@ function requireLogin() {
 // ---- Kiểm tra role ----
 function hasRole(...$roles) {
     if (!isLoggedIn()) return false;
+    // Support both hasRole('a','b') and hasRole(['a','b'])
+    if (count($roles) === 1 && is_array($roles[0])) {
+        $roles = $roles[0];
+    }
     return in_array($_SESSION['role'], $roles);
 }
 
 function requireRole(...$roles) {
+    // Support both requireRole('a','b') and requireRole(['a','b'])
+    if (count($roles) === 1 && is_array($roles[0])) {
+        $roles = $roles[0];
+    }
     requireLogin();
     if (!hasRole(...$roles)) {
         http_response_code(403);

@@ -4,10 +4,11 @@ require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/database.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/functions.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/module_helpers.php';
 
-requireRole(['director', 'manager', 'warehouse', 'production']);
+requireRole('director', 'manager', 'warehouse', 'production');
 $pdo = erp_db();
 $errors = [];
 
+// Chỉ lấy phiếu GC đã nhập kho (in_progress hoặc done)
 $jobOrders = $pdo->query("SELECT jo.id, jo.job_code, c.name AS customer_name
     FROM job_orders jo
     INNER JOIN customers c ON c.id = jo.customer_id
@@ -26,10 +27,11 @@ foreach ($pdo->query($itemSql)->fetchAll(PDO::FETCH_ASSOC) as $item) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $jobOrderId = (int) ($_POST['job_order_id'] ?? 0);
     $outputDate = (string) ($_POST['output_date'] ?? date('Y-m-d'));
-    $outputBy = trim((string) ($_POST['output_by'] ?? erp_current_username()));
-    $itemIds = $_POST['job_order_item_id'] ?? [];
-    $qtyOks = $_POST['qty_ok'] ?? [];
-    $qtyNgs = $_POST['qty_ng'] ?? [];
+    $outputBy   = trim((string) ($_POST['output_by'] ?? erp_current_username()));
+    $note       = trim((string) ($_POST['note'] ?? ''));
+    $itemIds    = $_POST['job_order_item_id'] ?? [];
+    $qtyOks     = $_POST['qty_ok'] ?? [];
+    $qtyNgs     = $_POST['qty_ng'] ?? [];
 
     if (!erp_validate_csrf($_POST['csrf_token'] ?? null)) {
         $errors[] = 'CSRF token không hợp lệ.';
@@ -41,13 +43,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $items = [];
     foreach ($itemIds as $index => $itemId) {
         $itemId = (int) $itemId;
-        $qtyOk = max(0, (float) ($qtyOks[$index] ?? 0));
-        $qtyNg = max(0, (float) ($qtyNgs[$index] ?? 0));
+        $qtyOk  = max(0, (float) ($qtyOks[$index] ?? 0));
+        $qtyNg  = max(0, (float) ($qtyNgs[$index] ?? 0));
         if ($itemId > 0 && ($qtyOk > 0 || $qtyNg > 0)) {
             $items[] = ['job_order_item_id' => $itemId, 'qty_ok' => $qtyOk, 'qty_ng' => $qtyNg];
         }
     }
-
     if (!$items) {
         $errors[] = 'Cần ít nhất một dòng sản phẩm xuất kho.';
     }
@@ -56,17 +57,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             $pdo->beginTransaction();
             $outputCode = erp_generate_daily_code($pdo, 'warehouse_outputs', 'output_code', 'XK', $outputDate);
-            $stmt = $pdo->prepare('INSERT INTO warehouse_outputs (output_code, job_order_id, output_date, output_by) VALUES (?, ?, ?, ?)');
-            $stmt->execute([$outputCode, $jobOrderId, $outputDate, $outputBy]);
+            $stmt = $pdo->prepare('INSERT INTO warehouse_outputs (output_code, job_order_id, output_date, output_by, note) VALUES (?, ?, ?, ?, ?)');
+            $stmt->execute([$outputCode, $jobOrderId, $outputDate, $outputBy, $note ?: null]);
             $outputId = (int) $pdo->lastInsertId();
 
             $insertItem = $pdo->prepare('INSERT INTO warehouse_output_items (output_id, job_order_item_id, product_code_id, qty_ok, qty_ng) SELECT ?, joi.id, joi.product_code_id, ?, ? FROM job_order_items joi WHERE joi.id = ? AND joi.job_order_id = ?');
             foreach ($items as $item) {
                 $insertItem->execute([$outputId, $item['qty_ok'], $item['qty_ng'], $item['job_order_item_id'], $jobOrderId]);
+
+                // Cập nhật qty_ok / qty_ng trên job_order_items
+                $pdo->prepare('UPDATE job_order_items SET qty_ok = qty_ok + ?, qty_ng = qty_ng + ? WHERE id = ?')
+                    ->execute([$item['qty_ok'], $item['qty_ng'], $item['job_order_item_id']]);
             }
             $pdo->commit();
             erp_flash('success', 'Đã tạo phiếu xuất kho ' . $outputCode . '.');
-            erp_redirect(erp_url('modules/production/output.php'));
+            erp_redirect(erp_url('modules/warehouse/output.php'));
         } catch (Throwable $throwable) {
             if ($pdo->inTransaction()) {
                 $pdo->rollBack();
@@ -76,12 +81,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-$outputs = $pdo->query("SELECT wo.id, wo.output_date, wo.output_by, jo.job_code, c.name AS customer_name
+$outputs = $pdo->query("SELECT wo.id, wo.output_code, wo.output_date, wo.output_by, jo.job_code, c.name AS customer_name
     FROM warehouse_outputs wo
     INNER JOIN job_orders jo ON jo.id = wo.job_order_id
     INNER JOIN customers c ON c.id = jo.customer_id
     ORDER BY wo.output_date DESC, wo.id DESC
-    LIMIT 30")->fetchAll(PDO::FETCH_ASSOC);
+    LIMIT 50")->fetchAll(PDO::FETCH_ASSOC);
 $csrfToken = erp_csrf_token();
 $flashes = erp_pull_flashes();
 
@@ -91,14 +96,14 @@ include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/sidebar.php';
 <div class="container-fluid py-4">
     <?php erp_render_breadcrumb([
         ['label' => 'Tổng quan', 'url' => erp_url('dashboard.php')],
-        ['label' => 'Sản xuất', 'url' => erp_url('modules/production/index.php')],
+        ['label' => 'Quản lý kho', 'url' => erp_url('modules/warehouse/index.php')],
         ['label' => 'Xuất kho thành phẩm'],
     ]); ?>
 
     <div class="d-flex justify-content-between align-items-center mb-3">
         <div>
             <h1 class="h3 mb-1">Xuất kho thành phẩm</h1>
-            <p class="text-muted mb-0">Ghi nhận xuất kho thành phẩm/NG từ phiếu gia công.</p>
+            <p class="text-muted mb-0">Ghi nhận xuất kho thành phẩm/NG sau kiểm tra chất lượng (QC).</p>
         </div>
     </div>
 
@@ -119,12 +124,17 @@ include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/sidebar.php';
                 <div class="card-header bg-white"><h2 class="h5 mb-0">Danh sách phiếu xuất kho</h2></div>
                 <div class="card-body table-responsive">
                     <table class="table table-hover align-middle mb-0">
-                        <thead class="table-light"><tr><th>Phiếu GC</th><th>Khách hàng</th><th>Ngày xuất</th><th>Người xuất</th></tr></thead>
+                        <thead class="table-light">
+                            <tr><th>Mã phiếu</th><th>Phiếu GC</th><th>Khách hàng</th><th>Ngày xuất</th><th>Người xuất</th></tr>
+                        </thead>
                         <tbody>
-                        <?php if (!$outputs): ?><tr><td colspan="4" class="text-center text-muted py-4">Chưa có phiếu xuất kho.</td></tr><?php endif; ?>
+                        <?php if (!$outputs): ?>
+                            <tr><td colspan="5" class="text-center text-muted py-4">Chưa có phiếu xuất kho.</td></tr>
+                        <?php endif; ?>
                         <?php foreach ($outputs as $output): ?>
                             <tr>
-                                <td class="fw-semibold"><?= erp_h($output['job_code']) ?></td>
+                                <td class="fw-semibold text-success"><?= erp_h($output['output_code']) ?></td>
+                                <td><?= erp_h($output['job_code']) ?></td>
                                 <td><?= erp_h($output['customer_name']) ?></td>
                                 <td><?= erp_h(erp_format_date($output['output_date'])) ?></td>
                                 <td><?= erp_h($output['output_by']) ?></td>
@@ -145,7 +155,7 @@ include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/sidebar.php';
                     <form method="post" id="outputForm" class="row g-3">
                         <input type="hidden" name="csrf_token" value="<?= erp_h($csrfToken) ?>">
                         <div class="col-12">
-                            <label class="form-label">Phiếu gia công</label>
+                            <label class="form-label fw-semibold">Phiếu gia công <span class="text-danger">*</span></label>
                             <select class="form-select" name="job_order_id" id="outputJobOrderSelect" required>
                                 <option value="">Chọn phiếu gia công</option>
                                 <?php foreach ($jobOrders as $jobOrder): ?>
@@ -154,16 +164,20 @@ include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/sidebar.php';
                             </select>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label">Ngày xuất</label>
+                            <label class="form-label fw-semibold">Ngày xuất <span class="text-danger">*</span></label>
                             <input type="date" class="form-control" name="output_date" value="<?= date('Y-m-d') ?>" required>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label">Người xuất</label>
+                            <label class="form-label fw-semibold">Người xuất <span class="text-danger">*</span></label>
                             <input type="text" class="form-control" name="output_by" value="<?= erp_h(erp_current_username()) ?>" required>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Ghi chú</label>
+                            <input type="text" class="form-control" name="note" placeholder="Tuỳ chọn">
                         </div>
                         <div class="col-12 table-responsive">
                             <table class="table align-middle mb-0">
-                                <thead class="table-light"><tr><th>Job order item</th><th>Product code</th><th>Qty OK</th><th>Qty NG</th><th></th></tr></thead>
+                                <thead class="table-light"><tr><th>Mã SP – dòng phiếu</th><th>Qty OK</th><th>Qty NG</th><th></th></tr></thead>
                                 <tbody id="outputItemsBody"></tbody>
                             </table>
                         </div>
@@ -177,43 +191,38 @@ include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/sidebar.php';
     </div>
 </div>
 <script>
-const outputJobOrderItemMap = <?= json_encode($jobOrderItemMap, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+const outputJobOrderItemMap = <?= json_encode($jobOrderItemMap, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG) ?>;
 const outputItemsBody = document.getElementById('outputItemsBody');
 
 function outputOptions(jobOrderId, selectedId = '') {
     const items = outputJobOrderItemMap[jobOrderId] || [];
-    return '<option value="">Chọn dòng phiếu</option>' + items.map(item => `<option value="${item.id}" ${String(selectedId) === String(item.id) ? 'selected' : ''}>${item.code} - ${item.name}</option>`).join('');
+    return '<option value="">Chọn dòng SP</option>' + items.map(item =>
+        `<option value="${item.id}" ${String(selectedId) === String(item.id) ? 'selected' : ''}>${item.code} - ${item.name} (OK:${item.qty_ok}, NG:${item.qty_ng})</option>`
+    ).join('');
 }
 
-function syncOutputRow(row) {
-    const jobOrderId = document.getElementById('outputJobOrderSelect').value;
-    const items = outputJobOrderItemMap[jobOrderId] || [];
-    const selected = items.find(item => String(item.id) === row.querySelector('.output-item-select').value) || {};
-    row.querySelector('.product-code-cell').textContent = selected.code || '';
-}
-
-function addOutputRow(selectedId = '') {
+function addOutputRow() {
     const jobOrderId = document.getElementById('outputJobOrderSelect').value;
     const row = document.createElement('tr');
     row.innerHTML = `
-        <td><select class="form-select output-item-select" name="job_order_item_id[]" required>${outputOptions(jobOrderId, selectedId)}</select></td>
-        <td class="product-code-cell"></td>
-        <td><input type="number" min="0" step="0.01" class="form-control" name="qty_ok[]" value="0"></td>
-        <td><input type="number" min="0" step="0.01" class="form-control" name="qty_ng[]" value="0"></td>
-        <td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger remove-output-row"><i class="fa-solid fa-trash"></i></button></td>`;
+        <td><select class="form-select form-select-sm output-item-select" name="job_order_item_id[]" required>${outputOptions(jobOrderId)}</select></td>
+        <td><input type="number" min="0" step="0.01" class="form-control form-control-sm" name="qty_ok[]" value="0"></td>
+        <td><input type="number" min="0" step="0.01" class="form-control form-control-sm" name="qty_ng[]" value="0"></td>
+        <td><button type="button" class="btn btn-sm btn-outline-danger remove-row"><i class="fa-solid fa-trash"></i></button></td>`;
     outputItemsBody.appendChild(row);
-    row.querySelector('.output-item-select').addEventListener('change', () => syncOutputRow(row));
-    row.querySelector('.remove-output-row').addEventListener('click', () => row.remove());
-    syncOutputRow(row);
+    row.querySelector('.remove-row').addEventListener('click', () => row.remove());
 }
 
-function resetOutputRows() {
+document.getElementById('outputJobOrderSelect').addEventListener('change', function () {
     outputItemsBody.innerHTML = '';
+    if (this.value) { addOutputRow(); }
+});
+document.getElementById('addOutputRow').addEventListener('click', function () {
+    if (!document.getElementById('outputJobOrderSelect').value) {
+        alert('Vui lòng chọn phiếu gia công trước.');
+        return;
+    }
     addOutputRow();
-}
-
-document.getElementById('outputJobOrderSelect').addEventListener('change', resetOutputRows);
-document.getElementById('addOutputRow').addEventListener('click', () => addOutputRow());
-resetOutputRows();
+});
 </script>
 <?php include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/footer.php'; ?>

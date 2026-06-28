@@ -28,6 +28,34 @@ function money($value): string {
     return number_format((float) $value, 0, ',', '.');
 }
 
+function payrollDetailValue(string $field, $value): string
+{
+    $dateFields = ['created_at', 'updated_at'];
+    $boolFields = ['is_late_warning', 'manually_adjusted', 'has_social_insurance', 'attendance_bonus_eligible'];
+    $textFields = ['remark', 'late_warning_note'];
+    $decimalFields = [
+        'working_days_standard', 'salary_per_day', 'salary_per_hour', 'actual_workdays', 'paid_leave_days',
+        'other_paid_leave_days', 'unpaid_leave_days', 'late_early_hours', 'late_early_deduction', 'total_paid_days',
+        'basic_salary_received', 'basic_salary_per_hour', 'ot_weekday_hours', 'ot_weekend_hours', 'ot_holiday_hours',
+        'ot_meal_days', 'kpi_over_days', 'kpi_under_days', 'annual_leave_total', 'annual_leave_used',
+        'annual_leave_remaining', 'dependants'
+    ];
+
+    if (in_array($field, $dateFields, true)) {
+        return e(formatDateTime($value));
+    }
+    if (in_array($field, $boolFields, true)) {
+        return !empty($value) ? 'Có' : 'Không';
+    }
+    if (in_array($field, $textFields, true)) {
+        return e((string) $value);
+    }
+    if (in_array($field, $decimalFields, true)) {
+        return number_format((float) $value, 2, ',', '.');
+    }
+    return money($value);
+}
+
 $detailGroups = [
     'Thông tin công và lương cơ bản' => ['basic_salary' => 'Lương cơ bản', 'working_days_standard' => 'Ngày công chuẩn', 'salary_per_day' => 'Lương/ngày', 'salary_per_hour' => 'Lương/giờ', 'actual_workdays' => 'Ngày công thực tế', 'paid_leave_days' => 'Nghỉ phép hưởng lương', 'other_paid_leave_days' => 'Nghỉ khác hưởng lương', 'unpaid_leave_days' => 'Nghỉ không lương', 'late_early_hours' => 'Giờ trễ/về sớm', 'late_early_deduction' => 'Khấu trừ trễ/về sớm', 'total_paid_days' => 'Tổng ngày được trả', 'basic_salary_received' => 'Lương cơ bản thực nhận'],
     'Phụ cấp và thưởng' => ['meal_allowance' => 'Phụ cấp ăn', 'meal_received' => 'Tiền ăn thực nhận', 'clothes_allowance' => 'Phụ cấp quần áo', 'clothes_received' => 'Quần áo thực nhận', 'phone_allowance' => 'Phụ cấp điện thoại', 'phone_received' => 'Điện thoại thực nhận', 'transport_allowance' => 'Phụ cấp đi lại', 'housing_allowance' => 'Phụ cấp nhà ở', 'transport_received' => 'Đi lại thực nhận', 'housing_received' => 'Nhà ở thực nhận', 'performance_bonus' => 'Thưởng hiệu suất', 'kpi_bonus' => 'Thưởng KPI', 'kpi_over_days' => 'Ngày vượt KPI', 'kpi_under_days' => 'Ngày dưới KPI', 'other_income' => 'Thu nhập khác', 'adjustment' => 'Điều chỉnh', 'other_bonus' => 'Thưởng khác', 'attendance_bonus' => 'Thưởng chuyên cần'],
@@ -85,15 +113,7 @@ include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/sidebar.php';
                                             <tr>
                                                 <th style="width: 40%;"><?= e($label) ?></th>
                                                 <td>
-                                                    <?php if (in_array($field, ['created_at', 'updated_at'], true)): ?>
-                                                        <?= e(formatDateTime($detail[$field] ?? null)) ?>
-                                                    <?php elseif (in_array($field, ['is_late_warning', 'manually_adjusted', 'has_social_insurance', 'attendance_bonus_eligible'], true)): ?>
-                                                        <?= !empty($detail[$field]) ? 'Có' : 'Không' ?>
-                                                    <?php elseif (in_array($field, ['remark', 'late_warning_note'], true)): ?>
-                                                        <?= e($detail[$field] ?? '') ?>
-                                                    <?php else: ?>
-                                                        <?= money($detail[$field] ?? 0) ?>
-                                                    <?php endif; ?>
+                                                    <?= payrollDetailValue($field, $detail[$field] ?? null) ?>
                                                 </td>
                                             </tr>
                                         <?php endforeach; ?>

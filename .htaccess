@@ -1,0 +1,13 @@
+Options -Indexes
+DirectoryIndex index.php dashboard.php login.php
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /ntn_erp/
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options nosniff
+    Header always set X-Frame-Options SAMEORIGIN
+    Header always set X-XSS-Protection "1; mode=block"
+</IfModule>

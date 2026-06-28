@@ -1,134 +1,199 @@
 <?php
-declare(strict_types=1);
+require_once 'config/database.php';
+require_once 'config/auth.php';
+require_once 'config/functions.php';
 
-require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/auth.php';
-require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/database.php';
-require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/functions.php';
+if (isLoggedIn()) {
+    header('Location: /ntn_erp/dashboard.php');
+    exit();
+}
 
-$errors = [];
+$error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    ensurePostCsrf();
+    if (!verifyCSRF($_POST['csrf_token'] ?? '')) {
+        $error = 'Yêu cầu không hợp lệ. Vui lòng thử lại.';
+    } else {
+        $username = trim($_POST['username'] ?? '');
+        $password = $_POST['password'] ?? '';
 
-    $username = trim((string) ($_POST['username'] ?? ''));
-    $password = (string) ($_POST['password'] ?? '');
-
-    if ($username === '') {
-        $errors[] = 'Vui lòng nhập tên đăng nhập.';
-    }
-
-    if ($password === '') {
-        $errors[] = 'Vui lòng nhập mật khẩu.';
-    }
-
-    if ($errors === []) {
-        $sql = 'SELECT u.id, u.username, u.full_name, u.password_hash, u.department_id, u.employee_code, u.is_active, r.name AS role_name
-                FROM users u
-                INNER JOIN roles r ON r.id = u.role_id
-                WHERE u.username = :username
-                LIMIT 1';
-        $statement = $pdo->prepare($sql);
-        $statement->execute(['username' => $username]);
-        $user = $statement->fetch();
-
-        if (!$user || empty($user['password_hash']) || !password_verify($password, $user['password_hash'])) {
-            $errors[] = 'Tên đăng nhập hoặc mật khẩu không chính xác.';
-        } elseif ((int) ($user['is_active'] ?? 0) !== 1) {
-            $errors[] = 'Tài khoản của bạn đang bị vô hiệu hóa. Vui lòng liên hệ quản trị hệ thống.';
+        if (empty($username) || empty($password)) {
+            $error = 'Vui lòng nhập đầy đủ tên đăng nhập và mật khẩu.';
         } else {
-            session_regenerate_id(true);
-            $_SESSION['user_id'] = $user['id'];
-            $_SESSION['username'] = $user['username'];
-            $_SESSION['full_name'] = $user['full_name'];
-            $_SESSION['role'] = $user['role_name'];
-            $_SESSION['department_id'] = $user['department_id'];
-            $_SESSION['employee_code'] = $user['employee_code'];
+            $pdo  = getDBConnection();
+            // FIX: tìm theo username HOẶC employee_code
+            $stmt = $pdo->prepare("
+                SELECT u.id, u.employee_code, u.full_name, u.username,
+                       u.password_hash, u.is_active, u.department_id,
+                       r.name AS role, r.display_name AS role_name
+                FROM users u
+                JOIN roles r ON u.role_id = r.id
+                WHERE u.username = ? OR u.employee_code = ?
+                LIMIT 1
+            ");
+            $stmt->execute([$username, $username]);
+            $user = $stmt->fetch();
 
-            setFlash('success', 'Đăng nhập thành công. Chào mừng bạn quay trở lại!');
-            redirect('dashboard.php');
+            if ($user && $user['is_active'] && password_verify($password, $user['password_hash'])) {
+                session_regenerate_id(true);
+                $_SESSION['user_id']       = $user['id'];
+                $_SESSION['employee_code'] = $user['employee_code'];
+                $_SESSION['full_name']     = $user['full_name'];
+                $_SESSION['username']      = $user['username'];
+                $_SESSION['role']          = $user['role'];
+                $_SESSION['role_name']     = $user['role_name'];
+                $_SESSION['department_id'] = $user['department_id'];
+                $_SESSION['login_time']    = time();
+
+                $redirect = $_GET['redirect'] ?? '/ntn_erp/dashboard.php';
+                header("Location: " . $redirect);
+                exit();
+            } elseif ($user && !$user['is_active']) {
+                $error = 'Tài khoản của bạn đã bị khóa. Liên hệ quản trị viên.';
+            } else {
+                $error = 'Tên đăng nhập hoặc mật khẩu không đúng.';
+            }
         }
     }
 }
 
-$flashMessages = getFlashMessages();
+$csrf = generateCSRF();
 ?>
 <!DOCTYPE html>
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Đăng nhập | NTN ERP</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css" rel="stylesheet">
+    <title>Đăng nhập - ERP System</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <style>
-        body { min-height: 100vh; background: linear-gradient(135deg, #091c35 0%, #0f4c81 55%, #1b6ca8 100%); display: flex; align-items: center; justify-content: center; padding: 1.5rem; }
-        .login-card { width: 100%; max-width: 460px; border: 0; border-radius: 1.25rem; box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.28); overflow: hidden; }
-        .brand-gradient { background: linear-gradient(135deg, rgba(15, 76, 129, 0.12), rgba(9, 28, 53, 0.02)); }
-        .form-control, .input-group-text, .btn { border-radius: .85rem; }
+        body {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Segoe UI', sans-serif;
+        }
+        .login-card {
+            background: rgba(255, 255, 255, 0.97);
+            border-radius: 20px;
+            padding: 40px;
+            width: 100%;
+            max-width: 420px;
+            box-shadow: 0 25px 50px rgba(0,0,0,0.4);
+        }
+        .login-logo { text-align: center; margin-bottom: 30px; }
+        .login-logo .logo-icon {
+            width: 70px; height: 70px;
+            background: linear-gradient(135deg, #0f3460, #533483);
+            border-radius: 20px;
+            display: inline-flex; align-items: center; justify-content: center;
+            font-size: 32px; margin-bottom: 12px;
+        }
+        .login-logo h4 { color: #1a1a2e; font-weight: 700; margin: 0; }
+        .login-logo p  { color: #666; font-size: 13px; margin: 4px 0 0; }
+        .form-label { font-weight: 600; color: #333; font-size: 14px; }
+        .form-control {
+            border-radius: 10px; padding: 12px 15px;
+            border: 2px solid #e9ecef; transition: border-color 0.3s;
+        }
+        .form-control:focus {
+            border-color: #0f3460;
+            box-shadow: 0 0 0 0.2rem rgba(15,52,96,.15);
+        }
+        .input-group .form-control { border-right: none; }
+        .input-group .btn-outline-secondary {
+            border: 2px solid #e9ecef; border-left: none;
+            border-radius: 0 10px 10px 0; background: white;
+        }
+        .btn-login {
+            background: linear-gradient(135deg, #0f3460, #533483);
+            border: none; border-radius: 10px; padding: 12px;
+            font-size: 16px; font-weight: 600;
+            letter-spacing: 0.5px; transition: all 0.3s;
+        }
+        .btn-login:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(15,52,96,.4);
+        }
+        .hint-box {
+            background: #f0f7ff;
+            border: 1px solid #bfdbfe;
+            border-radius: 10px;
+            padding: 10px 14px;
+            margin-top: 16px;
+            font-size: 12px;
+            color: #1e40af;
+        }
     </style>
 </head>
 <body>
-    <div class="card login-card">
-        <div class="card-body p-4 p-lg-5 brand-gradient">
-            <div class="text-center mb-4">
-                <div class="display-6 fw-bold mb-2">🏭 NTN ERP</div>
-                <p class="text-muted mb-0">CÔNG TY CỔ PHẦN SẢN XUẤT VÀ CUNG ỨNG NTN VIỆT NAM</p>
-            </div>
-
-            <?php foreach ($flashMessages as $flash): ?>
-                <div class="alert alert-<?= e($flash['type']) ?> alert-dismissible fade show" role="alert">
-                    <?= e($flash['message']) ?>
-                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-                </div>
-            <?php endforeach; ?>
-
-            <?php if ($errors !== []): ?>
-                <div class="alert alert-danger" role="alert">
-                    <ul class="mb-0 ps-3">
-                        <?php foreach ($errors as $error): ?>
-                            <li><?= e($error) ?></li>
-                        <?php endforeach; ?>
-                    </ul>
-                </div>
-            <?php endif; ?>
-
-            <form method="post" novalidate>
-                <?= csrf_input() ?>
-                <div class="mb-3">
-                    <label for="username" class="form-label fw-semibold">Tên đăng nhập</label>
-                    <div class="input-group">
-                        <span class="input-group-text"><i class="fa-regular fa-user"></i></span>
-                        <input type="text" class="form-control" id="username" name="username" value="<?= e((string) old('username')) ?>" placeholder="Nhập tên đăng nhập" autocomplete="username" required>
-                    </div>
-                </div>
-                <div class="mb-4">
-                    <label for="password" class="form-label fw-semibold">Mật khẩu</label>
-                    <div class="input-group">
-                        <span class="input-group-text"><i class="fa-solid fa-lock"></i></span>
-                        <input type="password" class="form-control" id="password" name="password" placeholder="Nhập mật khẩu" autocomplete="current-password" required>
-                        <button class="btn btn-outline-secondary" type="button" id="togglePassword" aria-label="Hiện hoặc ẩn mật khẩu">
-                            <i class="fa-regular fa-eye"></i>
-                        </button>
-                    </div>
-                </div>
-                <button type="submit" class="btn btn-primary w-100 py-2 fw-semibold">
-                    <i class="fa-solid fa-right-to-bracket me-2"></i>Đăng nhập hệ thống
-                </button>
-            </form>
-        </div>
+<div class="login-card">
+    <div class="login-logo">
+        <div class="logo-icon">🏢</div>
+        <h4>ERP System</h4>
+        <p>Hệ thống Quản lý Doanh nghiệp</p>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        const togglePassword = document.getElementById('togglePassword');
-        const passwordInput = document.getElementById('password');
-        togglePassword?.addEventListener('click', () => {
-            const isPassword = passwordInput.type === 'password';
-            passwordInput.type = isPassword ? 'text' : 'password';
-            togglePassword.innerHTML = isPassword
-                ? '<i class="fa-regular fa-eye-slash"></i>'
-                : '<i class="fa-regular fa-eye"></i>';
-        });
-    </script>
+    <?php if ($error): ?>
+    <div class="alert alert-danger d-flex align-items-center" role="alert">
+        <i class="fas fa-exclamation-triangle me-2"></i>
+        <?= htmlspecialchars($error) ?>
+    </div>
+    <?php endif; ?>
+
+    <form method="POST" action="">
+        <input type="hidden" name="csrf_token" value="<?= $csrf ?>">
+
+        <div class="mb-3">
+            <label class="form-label">
+                <i class="fas fa-id-badge me-1"></i>Mã nhân viên / Tên đăng nhập
+            </label>
+            <input type="text" class="form-control" name="username"
+                   value="<?= htmlspecialchars($_POST['username'] ?? '') ?>"
+                   placeholder="VD: NV01 hoặc tên đăng nhập"
+                   autocomplete="username" required>
+        </div>
+
+        <div class="mb-4">
+            <label class="form-label"><i class="fas fa-lock me-1"></i>Mật khẩu</label>
+            <div class="input-group">
+                <input type="password" class="form-control" name="password" id="passwordInput"
+                       placeholder="Nhập mật khẩu" autocomplete="current-password" required>
+                <button class="btn btn-outline-secondary" type="button" onclick="togglePassword()">
+                    <i class="fas fa-eye" id="eyeIcon"></i>
+                </button>
+            </div>
+        </div>
+
+        <button type="submit" class="btn btn-login btn-primary w-100 text-white">
+            <i class="fas fa-sign-in-alt me-2"></i>Đăng nhập
+        </button>
+    </form>
+
+    <div class="hint-box">
+        <i class="fas fa-info-circle me-1"></i>
+        Đăng nhập bằng <strong>Mã nhân viên</strong> (VD: <strong>NV001</strong>)
+        hoặc <strong>tên đăng nhập</strong> đã được cấp.
+        Mật khẩu mặc định: <strong>123456</strong>
+    </div>
+</div>
+
+<script>
+function togglePassword() {
+    const input = document.getElementById('passwordInput');
+    const icon  = document.getElementById('eyeIcon');
+    if (input.type === 'password') {
+        input.type = 'text';
+        icon.className = 'fas fa-eye-slash';
+    } else {
+        input.type = 'password';
+        icon.className = 'fas fa-eye';
+    }
+}
+</script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

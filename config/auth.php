@@ -1,79 +1,65 @@
 <?php
-declare(strict_types=1);
-
 if (session_status() === PHP_SESSION_NONE) {
+    session_set_cookie_params([
+        'lifetime' => 0,
+        'path'     => '/',
+        'httponly' => true,
+        'samesite' => 'Strict'
+    ]);
     session_start();
 }
 
-function currentUser(): ?array
-{
-    if (!empty($_SESSION['user']) && is_array($_SESSION['user'])) {
-        $user = $_SESSION['user'];
-        return [
-            'id' => $user['id'] ?? $user['user_id'] ?? null,
-            'name' => $user['full_name'] ?? $user['name'] ?? $user['username'] ?? 'Người dùng',
-            'role' => $user['role'] ?? null,
-            'department_id' => $user['department_id'] ?? null,
-            'employee_code' => $user['employee_code'] ?? null,
-        ];
-    }
-
-    if (!empty($_SESSION['user_id'])) {
-        return [
-            'id' => $_SESSION['user_id'],
-            'name' => $_SESSION['full_name'] ?? $_SESSION['name'] ?? $_SESSION['username'] ?? 'Người dùng',
-            'role' => $_SESSION['role'] ?? null,
-            'department_id' => $_SESSION['department_id'] ?? null,
-            'employee_code' => $_SESSION['employee_code'] ?? null,
-        ];
-    }
-
-    return null;
+// ---- Kiểm tra đăng nhập ----
+function isLoggedIn() {
+    return isset($_SESSION['user_id']) && !empty($_SESSION['user_id']);
 }
 
-function currentUserId(): int|string|null
-{
-    return currentUser()['id'] ?? null;
+function requireLogin() {
+    if (!isLoggedIn()) {
+        $current = urlencode($_SERVER['REQUEST_URI']);
+        header("Location: /ntn_erp/login.php?redirect=$current");
+        exit();
+    }
 }
 
-function isLoggedIn(): bool
-{
-    return currentUserId() !== null;
+// ---- Kiểm tra role ----
+function hasRole(...$roles) {
+    if (!isLoggedIn()) return false;
+    return in_array($_SESSION['role'], $roles);
 }
 
-function requireLogin(): void
-{
-    if (isLoggedIn()) {
-        return;
-    }
-
-    if (function_exists('setFlash')) {
-        setFlash('warning', 'Vui lòng đăng nhập để tiếp tục.');
-    }
-
-    if (function_exists('redirect')) {
-        redirect('login.php');
-    }
-
-    header('Location: /ntn_erp/login.php');
-    exit;
-}
-
-function requireRole(array $roles): void
-{
+function requireRole(...$roles) {
     requireLogin();
-
-    $role = (string) (currentUser()['role'] ?? '');
-    if (in_array($role, $roles, true)) {
-        return;
+    if (!hasRole(...$roles)) {
+        http_response_code(403);
+        include __DIR__ . '/../includes/403.php';
+        exit();
     }
-
-    if (function_exists('setFlash') && function_exists('redirect')) {
-        setFlash('danger', 'Bạn không có quyền truy cập chức năng này.');
-        redirect('dashboard.php');
-    }
-
-    http_response_code(403);
-    echo '403 Forbidden';
-    exit;
 }
+
+// ---- Lấy thông tin user hiện tại ----
+function currentUser() {
+    return [
+        'id'          => $_SESSION['user_id']   ?? null,
+        'full_name'   => $_SESSION['full_name'] ?? '',
+        'username'    => $_SESSION['username']  ?? '',
+        'role'        => $_SESSION['role']      ?? '',
+        'role_name'   => $_SESSION['role_name'] ?? '',
+        'employee_code' => $_SESSION['employee_code'] ?? '',
+        'department_id' => $_SESSION['department_id'] ?? null,
+    ];
+}
+
+// ---- Lấy màu badge theo role ----
+function getRoleBadge($role) {
+    $map = [
+        'director'   => ['class' => 'danger',   'icon' => '👑', 'label' => 'Giám đốc'],
+        'accountant' => ['class' => 'warning',   'icon' => '💰', 'label' => 'Kế toán'],
+        'manager'    => ['class' => 'primary',   'icon' => '🏢', 'label' => 'Quản lý'],
+        'warehouse'  => ['class' => 'info',      'icon' => '📦', 'label' => 'Quản lý Kho'],
+        'production' => ['class' => 'success',   'icon' => '🏭', 'label' => 'Quản lý SX'],
+        'employee'   => ['class' => 'secondary', 'icon' => '👤', 'label' => 'Nhân viên'],
+    ];
+    return $map[$role] ?? ['class' => 'secondary', 'icon' => '❓', 'label' => $role];
+}
+?>

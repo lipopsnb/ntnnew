@@ -2,262 +2,132 @@
 require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/database.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/auth.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/functions.php';
-requireRole('director', 'accountant', 'manager', 'production');
+requireRole('director', 'manager', 'production');
 
 $pdo = getDBConnection();
 $user = currentUser();
+$errors = [];
+$viewMonth = max(1, min(12, (int) ($_GET['month'] ?? date('n'))));
+$viewYear = max(2020, min(2100, (int) ($_GET['year'] ?? date('Y'))));
+$daysInMonth = cal_days_in_month(CAL_GREGORIAN, $viewMonth, $viewYear);
+$monthStart = sprintf('%04d-%02d-01', $viewYear, $viewMonth);
+$monthEnd = sprintf('%04d-%02d-%02d', $viewYear, $viewMonth, $daysInMonth);
 
-$viewMonth = (int)($_GET['month'] ?? date('m'));
-$viewYear  = (int)($_GET['year']  ?? date('Y'));
-$filterDept = (int)($_GET['dept'] ?? 0);
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCSRF($_POST['csrf_token'] ?? '')) {
+        setFlash('danger', 'Phiên làm việc không hợp lệ.');
+        header('Location: /ntn_erp/modules/attendance/shift_schedule.php');
+        exit();
+    }
 
-if ($viewMonth < 1)  { $viewMonth = 12; $viewYear--; }
-if ($viewMonth > 12) { $viewMonth = 1;  $viewYear++; }
+    $userId = (int) ($_POST['user_id'] ?? 0);
+    $shiftId = (int) ($_POST['shift_id'] ?? 0);
+    $workDate = $_POST['work_date'] ?? '';
+    $note = trim($_POST['note'] ?? '');
 
-// Lấy danh sách nhân viên + ca trong tháng
-$sql = "SELECT u.id, u.full_name, u.employee_code, d.name AS dept_name,
-               ws.shift_name, ws.color AS shift_color,
-               ws.start_time, ws.end_time, ws.shift_code
-        FROM users u
-        LEFT JOIN departments d ON u.department_id = d.id
-        LEFT JOIN employee_shifts es ON es.user_id = u.id
-            AND es.effective_date <= LAST_DAY(?)
-            AND (es.end_date IS NULL OR es.end_date >= ?)
-        LEFT JOIN work_shifts ws ON es.shift_id = ws.id
-        WHERE u.is_active = 1";
-$params = ["$viewYear-$viewMonth-01", "$viewYear-$viewMonth-01"];
+    if ($userId <= 0 || $shiftId <= 0 || $workDate === '') $errors[] = 'Vui lòng chọn nhân viên, ca làm và ngày làm việc.';
 
-if ($filterDept) {
-    $sql .= " AND u.department_id = ?";
-    $params[] = $filterDept;
-}
-$sql .= " ORDER BY d.name, u.full_name";
-
-$stmt = $pdo->prepare($sql);
-$stmt->execute($params);
-$employees = $stmt->fetchAll();
-
-// Lấy chấm công trong tháng
-$attStmt = $pdo->prepare("
-    SELECT al.user_id, al.work_date, al.check_in, al.check_out,
-           al.work_hours, al.is_late, al.late_minutes, al.shift_id,
-           ws.color AS shift_color
-    FROM attendance_logs al
-    LEFT JOIN work_shifts ws ON al.shift_id = ws.id
-    WHERE MONTH(al.work_date) = ? AND YEAR(al.work_date) = ?
-");
-$attStmt->execute([$viewMonth, $viewYear]);
-$attMap = [];
-foreach ($attStmt->fetchAll() as $a) {
-    $attMap[$a['user_id']][$a['work_date']] = $a;
-}
-
-// Lấy nghỉ phép đã duyệt
-$leaveStmt = $pdo->prepare("
-    SELECT user_id, start_date, end_date, leave_type
-    FROM leave_requests
-    WHERE status = 'approved'
-      AND (MONTH(start_date) = ? OR MONTH(end_date) = ?)
-      AND (YEAR(start_date)  = ? OR YEAR(end_date)  = ?)
-");
-$leaveStmt->execute([$viewMonth, $viewMonth, $viewYear, $viewYear]);
-$leaveMap = [];
-foreach ($leaveStmt->fetchAll() as $lv) {
-    $s = strtotime($lv['start_date']);
-    $e = strtotime($lv['end_date']);
-    for ($d = $s; $d <= $e; $d += 86400) {
-        $leaveMap[$lv['user_id']][date('Y-m-d', $d)] = $lv['leave_type'];
+    if (!$errors) {
+        $stmt = $pdo->prepare(
+            "INSERT INTO shift_schedules (user_id, shift_id, work_date, note, created_by, created_at)
+             VALUES (?, ?, ?, ?, ?, NOW())
+             ON DUPLICATE KEY UPDATE shift_id = VALUES(shift_id), note = VALUES(note), created_by = VALUES(created_by)"
+        );
+        $stmt->execute([$userId, $shiftId, $workDate, $note, (int) $user['id']]);
+        setFlash('success', 'Đã lưu lịch ca.');
+        header('Location: /ntn_erp/modules/attendance/shift_schedule.php?month=' . date('n', strtotime($workDate)) . '&year=' . date('Y', strtotime($workDate)));
+        exit();
     }
 }
 
-$depts     = $pdo->query("SELECT * FROM departments ORDER BY name")->fetchAll();
-$daysInMon = cal_days_in_month(CAL_GREGORIAN, $viewMonth, $viewYear);
+$users = $pdo->query("SELECT id, employee_code, full_name FROM users WHERE is_active = 1 ORDER BY full_name ASC")->fetchAll();
+$shifts = $pdo->query("SELECT id, shift_code, shift_name, color FROM work_shifts WHERE is_active = 1 ORDER BY shift_name ASC")->fetchAll();
+$scheduleStmt = $pdo->prepare(
+    "SELECT ss.*, u.full_name, u.employee_code, ws.shift_code, ws.shift_name, ws.color
+     FROM shift_schedules ss
+     INNER JOIN users u ON u.id = ss.user_id
+     INNER JOIN work_shifts ws ON ws.id = ss.shift_id
+     WHERE ss.work_date BETWEEN ? AND ?
+     ORDER BY u.full_name ASC, ss.work_date ASC"
+);
+$scheduleStmt->execute([$monthStart, $monthEnd]);
+$scheduleRows = $scheduleStmt->fetchAll();
+$scheduleMap = [];
+foreach ($scheduleRows as $row) {
+    $scheduleMap[(int) $row['user_id']][$row['work_date']] = $row;
+}
 
 include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/header.php';
 include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/sidebar.php';
 ?>
-
 <div class="main-content">
-<div class="container-fluid py-4">
-
-    <!-- Header -->
-    <div class="d-flex justify-content-between align-items-center mb-3">
-        <div>
-            <h4 class="mb-1">📅 Lịch ca tháng <?= $viewMonth . '/' . $viewYear ?></h4>
-            <p class="text-muted small mb-0"><?= count($employees) ?> nhân viên</p>
+    <div class="container-fluid py-4">
+        <?php showFlash(); ?>
+        <?php if ($errors): ?><div class="alert alert-danger"><ul class="mb-0"><?php foreach ($errors as $error): ?><li><?= e($error) ?></li><?php endforeach; ?></ul></div><?php endif; ?>
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+            <div>
+                <h4 class="mb-1">Lịch ca tháng <?= $viewMonth ?>/<?= $viewYear ?></h4>
+                <p class="text-muted mb-0">Hiển thị lịch phân ca theo từng nhân viên</p>
+            </div>
+            <div class="d-flex gap-2">
+                <a class="btn btn-outline-secondary btn-sm" href="?month=<?= $viewMonth === 1 ? 12 : $viewMonth - 1 ?>&year=<?= $viewMonth === 1 ? $viewYear - 1 : $viewYear ?>">&laquo; Tháng trước</a>
+                <a class="btn btn-outline-secondary btn-sm" href="?month=<?= $viewMonth === 12 ? 1 : $viewMonth + 1 ?>&year=<?= $viewMonth === 12 ? $viewYear + 1 : $viewYear ?>">Tháng sau &raquo;</a>
+            </div>
         </div>
-        <div class="d-flex gap-2">
-            <a href="/ntn_erp/modules/attendance/shift_assign.php" class="btn btn-success btn-sm">
-                <i class="fas fa-user-clock me-1"></i>Phân công ca
-            </a>
-            <a href="/ntn_erp/modules/attendance/shift_setup.php" class="btn btn-outline-secondary btn-sm">
-                <i class="fas fa-cog me-1"></i>Setup ca
-            </a>
-        </div>
-    </div>
-
-    <!-- Điều hướng tháng + lọc -->
-    <div class="card border-0 shadow-sm mb-3">
-        <div class="card-body py-2">
-            <div class="d-flex align-items-center gap-3 flex-wrap">
-                <div class="d-flex align-items-center gap-2">
-                    <a href="?month=<?= $viewMonth-1 ?>&year=<?= $viewYear ?>&dept=<?= $filterDept ?>"
-                       class="btn btn-sm btn-outline-secondary"><i class="fas fa-chevron-left"></i></a>
-                    <strong>Tháng <?= $viewMonth ?>/<?= $viewYear ?></strong>
-                    <a href="?month=<?= $viewMonth+1 ?>&year=<?= $viewYear ?>&dept=<?= $filterDept ?>"
-                       class="btn btn-sm btn-outline-secondary"><i class="fas fa-chevron-right"></i></a>
-                    <a href="?month=<?= date('m') ?>&year=<?= date('Y') ?>&dept=<?= $filterDept ?>"
-                       class="btn btn-sm btn-outline-primary">Tháng này</a>
+        <div class="row g-4">
+            <div class="col-lg-4">
+                <div class="card shadow-sm border-0">
+                    <div class="card-header bg-primary text-white">Lập lịch ca</div>
+                    <div class="card-body">
+                        <form method="post" class="row g-3">
+                            <?= csrf_input() ?>
+                            <div class="col-12"><label class="form-label">Nhân viên</label><select class="form-select" name="user_id" required><option value="">Chọn nhân viên</option><?php foreach ($users as $row): ?><option value="<?= (int) $row['id'] ?>"><?= e($row['employee_code'] . ' - ' . $row['full_name']) ?></option><?php endforeach; ?></select></div>
+                            <div class="col-12"><label class="form-label">Ca làm việc</label><select class="form-select" name="shift_id" required><option value="">Chọn ca</option><?php foreach ($shifts as $row): ?><option value="<?= (int) $row['id'] ?>"><?= e($row['shift_code'] . ' - ' . $row['shift_name']) ?></option><?php endforeach; ?></select></div>
+                            <div class="col-12"><label class="form-label">Ngày làm việc</label><input class="form-control" type="date" name="work_date" value="<?= e($_POST['work_date'] ?? $monthStart) ?>" required></div>
+                            <div class="col-12"><label class="form-label">Ghi chú</label><textarea class="form-control" name="note" rows="3"><?= e($_POST['note'] ?? '') ?></textarea></div>
+                            <div class="col-12 d-grid"><button class="btn btn-primary" type="submit">Lưu lịch ca</button></div>
+                        </form>
+                    </div>
                 </div>
-                <form method="GET" class="d-flex gap-2 ms-auto">
-                    <input type="hidden" name="month" value="<?= $viewMonth ?>">
-                    <input type="hidden" name="year"  value="<?= $viewYear ?>">
-                    <select name="dept" class="form-select form-select-sm" style="width:180px;" onchange="this.form.submit()">
-                        <option value="">-- Tất cả phòng ban --</option>
-                        <?php foreach ($depts as $d): ?>
-                        <option value="<?= $d['id'] ?>" <?= $filterDept == $d['id'] ? 'selected' : '' ?>>
-                            <?= htmlspecialchars($d['name']) ?>
-                        </option>
-                        <?php endforeach; ?>
-                    </select>
-                </form>
             </div>
-        </div>
-    </div>
-
-    <!-- Chú thích -->
-    <div class="d-flex flex-wrap gap-2 mb-3">
-        <span class="legend-item"><span class="dot bg-success"></span>Đúng giờ</span>
-        <span class="legend-item"><span class="dot bg-warning"></span>Đi trễ</span>
-        <span class="legend-item"><span class="dot bg-info"></span>Nghỉ phép</span>
-        <span class="legend-item"><span class="dot bg-danger"></span>Vắng</span>
-        <span class="legend-item"><span class="dot bg-light border"></span>Chủ nhật</span>
-    </div>
-
-    <!-- Bảng lịch ca -->
-    <div class="card border-0 shadow-sm">
-        <div class="card-body p-0">
-            <div class="table-responsive" style="overflow-x:auto;">
-                <table class="table table-bordered table-sm schedule-table mb-0">
-                    <thead>
-                        <tr class="table-dark">
-                            <th class="sticky-col fw-bold" style="min-width:160px;">Nhân viên</th>
-                            <th class="text-center" style="min-width:60px;">Ca</th>
-                            <?php for ($d = 1; $d <= $daysInMon; $d++):
-                                $dateStr = "$viewYear-" . str_pad($viewMonth,2,'0',STR_PAD_LEFT) . "-" . str_pad($d,2,'0',STR_PAD_LEFT);
-                                $dow = date('N', strtotime($dateStr));
-                                $isToday = $dateStr === date('Y-m-d');
-                                $isSun = $dow == 7;
-                                $isSat = $dow == 6;
-                            ?>
-                            <th class="text-center px-1 <?= $isSun?'text-danger':($isSat?'text-warning':'') ?> <?= $isToday?'bg-primary text-white':'' ?>"
-                                style="min-width:36px; font-size:11px;">
-                                <div><?= ['','T2','T3','T4','T5','T6','T7','CN'][$dow] ?></div>
-                                <div class="<?= $isToday?'':'text-muted' ?>"><?= $d ?></div>
-                            </th>
-                            <?php endfor; ?>
-                            <th class="text-center" style="min-width:60px;">Ngày công</th>
-                            <th class="text-center" style="min-width:50px;">Trễ</th>
-                            <th class="text-center" style="min-width:50px;">Phép</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                    <?php
-                    $prevDept = null;
-                    foreach ($employees as $emp):
-                        // Header phòng ban
-                        if ($emp['dept_name'] !== $prevDept):
-                            $prevDept = $emp['dept_name'];
-                    ?>
-                    <tr class="table-secondary">
-                        <td colspan="<?= $daysInMon + 5 ?>" class="fw-bold small py-1 ps-3">
-                            🏢 <?= htmlspecialchars($emp['dept_name'] ?? 'Chưa phân phòng ban') ?>
-                        </td>
-                    </tr>
-                    <?php endif; ?>
-
-                    <?php
-                        $workDays = 0; $lateDays = 0; $leaveDays = 0;
-                    ?>
-                    <tr>
-                        <!-- Tên nhân viên -->
-                        <td class="sticky-col" style="min-width:160px;">
-                            <div class="fw-semibold small"><?= htmlspecialchars($emp['full_name']) ?></div>
-                            <div class="text-muted" style="font-size:10px;"><?= $emp['employee_code'] ?></div>
-                        </td>
-                        <!-- Ca mặc định -->
-                        <td class="text-center">
-                            <?php if ($emp['shift_name']): ?>
-                            <span class="badge" style="background:<?= $emp['shift_color'] ?>; font-size:10px; white-space:nowrap;">
-                                <?= htmlspecialchars($emp['shift_code']) ?>
-                            </span>
-                            <div style="font-size:9px; color:#666;">
-                                <?= substr($emp['start_time'],0,5) ?>–<?= substr($emp['end_time'],0,5) ?>
-                            </div>
-                            <?php else: ?>
-                            <span style="font-size:10px; color:red;">Chưa có</span>
-                            <?php endif; ?>
-                        </td>
-
-                        <!-- Từng ngày -->
-                        <?php for ($d = 1; $d <= $daysInMon; $d++):
-                            $dateStr = "$viewYear-" . str_pad($viewMonth,2,'0',STR_PAD_LEFT) . "-" . str_pad($d,2,'0',STR_PAD_LEFT);
-                            $dow = date('N', strtotime($dateStr));
-                            $isSun = $dow == 7;
-                            $isFuture = $dateStr > date('Y-m-d');
-                            $att   = $attMap[$emp['id']][$dateStr] ?? null;
-                            $leave = $leaveMap[$emp['id']][$dateStr] ?? null;
-
-                            $cellBg = ''; $cellContent = '';
-
-                            if ($isSun) {
-                                $cellBg = '#f8f9fa';
-                                $cellContent = '<span style="font-size:10px;color:#aaa;">CN</span>';
-                            } elseif ($isFuture) {
-                                $cellContent = '';
-                            } elseif ($leave && !$att) {
-                                $leaveDays++;
-                                $cellBg = '#e8f4fd';
-                                $cellContent = '<span style="font-size:11px;">🏖️</span>';
-                            } elseif ($att && $att['check_in']) {
-                                $workDays++;
-                                if ($att['is_late']) {
-                                    $lateDays++;
-                                    $cellBg = '#fffbf0';
-                                    $cellContent = '<span class="text-warning fw-bold" style="font-size:11px;" title="Trễ ' . $att['late_minutes'] . ' phút">⚡</span>';
-                                } else {
-                                    $cellBg = '#f0fff4';
-                                    $cellContent = '<span class="text-success fw-bold" style="font-size:11px;">✓</span>';
-                                }
-                            } elseif (!$isFuture) {
-                                $cellBg = '#fff5f5';
-                                $cellContent = '<span class="text-danger" style="font-size:11px;">✗</span>';
-                            }
-                        ?>
-                        <td class="text-center px-0" style="background:<?= $cellBg ?>;">
-                            <?= $cellContent ?>
-                        </td>
-                        <?php endfor; ?>
-
-                        <!-- Tổng kết -->
-                        <td class="text-center fw-bold text-success small"><?= $workDays ?></td>
-                        <td class="text-center fw-bold text-warning small"><?= $lateDays ?></td>
-                        <td class="text-center fw-bold text-info small"><?= $leaveDays ?></td>
-                    </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
+            <div class="col-lg-8">
+                <div class="card shadow-sm border-0">
+                    <div class="card-header bg-white fw-semibold">Bảng lịch ca</div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-bordered align-middle mb-0 small">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th style="min-width: 180px;">Nhân viên</th>
+                                        <?php for ($day = 1; $day <= $daysInMonth; $day++): ?>
+                                            <th class="text-center" style="min-width: 85px;"><?= $day ?></th>
+                                        <?php endfor; ?>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php if (!$users): ?><tr><td colspan="<?= $daysInMonth + 1 ?>" class="text-center text-muted py-4">Không có nhân viên.</td></tr><?php endif; ?>
+                                    <?php foreach ($users as $row): ?>
+                                        <tr>
+                                            <td><div class="fw-semibold"><?= e($row['full_name']) ?></div><div class="text-muted"><?= e($row['employee_code']) ?></div></td>
+                                            <?php for ($day = 1; $day <= $daysInMonth; $day++): ?>
+                                                <?php $date = sprintf('%04d-%02d-%02d', $viewYear, $viewMonth, $day); $schedule = $scheduleMap[(int) $row['id']][$date] ?? null; ?>
+                                                <td class="text-center">
+                                                    <?php if ($schedule): ?>
+                                                        <span class="badge" style="background: <?= e($schedule['color']) ?>;" title="<?= e($schedule['note']) ?>"><?= e($schedule['shift_code']) ?></span>
+                                                    <?php else: ?>
+                                                        <span class="text-muted">-</span>
+                                                    <?php endif; ?>
+                                                </td>
+                                            <?php endfor; ?>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 </div>
-</div>
-
-<style>
-.schedule-table th, .schedule-table td { vertical-align: middle; }
-.sticky-col { position: sticky; left: 0; background: #fff; z-index: 2; box-shadow: 2px 0 4px rgba(0,0,0,.08); }
-.legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
-.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
-</style>
-
 <?php include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/footer.php'; ?>

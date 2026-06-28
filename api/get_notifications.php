@@ -1,49 +1,59 @@
 <?php
-require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/auth.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/database.php';
-require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/module_helpers.php';
+require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/auth.php';
+require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/functions.php';
 requireLogin();
 
-header('Content-Type: application/json');
+header('Content-Type: application/json; charset=utf-8');
+$pdo = getDBConnection();
+$userId = (int) (currentUser()['id'] ?? ($_SESSION['user_id'] ?? 0));
+
+if ($userId <= 0) {
+    http_response_code(401);
+    echo json_encode(['success' => false, 'message' => 'Không xác định được người dùng.'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
 
 try {
-    $pdo = erp_db();
-    $items = [];
-    $roles = erp_user_roles();
-    $isManager = in_array('manager', $roles, true) || in_array('director', $roles, true);
-    $isAccountant = in_array('accountant', $roles, true) || in_array('director', $roles, true);
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        $action = $_POST['action'] ?? '';
+        if ($action !== 'mark_read') {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Hành động không hợp lệ.'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            exit;
+        }
 
-    if ($isManager && erp_table_exists($pdo, 'leave_requests')) {
-        $stmt = $pdo->query("SELECT id, employee_name, created_at FROM leave_requests WHERE status = 'pending' ORDER BY created_at DESC LIMIT 5");
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $items[] = ['icon' => 'fa-regular fa-calendar-xmark', 'title' => 'Đơn nghỉ phép chờ duyệt: ' . ($row['employee_name'] ?: ('#' . $row['id'])), 'url' => erp_url('modules/hr/leave_requests.php'), 'time' => $row['created_at'] ?? ''];
+        $id = $_POST['id'] ?? null;
+        if ($id === 'all' || isset($_POST['all'])) {
+            $stmt = $pdo->prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ?');
+            $stmt->execute([$userId]);
+        } elseif ((int) $id > 0) {
+            $stmt = $pdo->prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ? AND id = ?');
+            $stmt->execute([$userId, (int) $id]);
+        } else {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Thiếu ID thông báo.'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            exit;
         }
     }
 
-    if ($isManager && erp_table_exists($pdo, 'ot_requests')) {
-        $stmt = $pdo->query("SELECT id, employee_name, created_at FROM ot_requests WHERE status = 'pending' ORDER BY created_at DESC LIMIT 5");
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $items[] = ['icon' => 'fa-regular fa-clock', 'title' => 'Đơn OT chờ duyệt: ' . ($row['employee_name'] ?: ('#' . $row['id'])), 'url' => erp_url('modules/hr/ot_requests.php'), 'time' => $row['created_at'] ?? ''];
-        }
-    }
+    $countStmt = $pdo->prepare('SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0');
+    $countStmt->execute([$userId]);
+    $unreadCount = (int) $countStmt->fetchColumn();
 
-    if ($isAccountant && erp_table_exists($pdo, 'invoices')) {
-        $stmt = $pdo->query("SELECT id, invoice_code, due_date FROM invoices WHERE total_amount > COALESCE(paid_amount, 0) AND due_date < CURDATE() ORDER BY due_date ASC LIMIT 5");
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $items[] = ['icon' => 'fa-solid fa-file-invoice-dollar', 'title' => 'Hóa đơn quá hạn: ' . $row['invoice_code'], 'url' => erp_url('modules/invoice/index.php'), 'time' => $row['due_date'] ?? ''];
-        }
-    }
+    $listStmt = $pdo->prepare('SELECT id, title, message, type, reference_id, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY is_read ASC, created_at DESC LIMIT 20');
+    $listStmt->execute([$userId]);
+    $notifications = $listStmt->fetchAll(PDO::FETCH_ASSOC);
 
-    if ($isManager && erp_table_exists($pdo, 'assets')) {
-        $stmt = $pdo->query("SELECT id, asset_name, maintenance_due_date FROM assets WHERE maintenance_due_date IS NOT NULL AND maintenance_due_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY) ORDER BY maintenance_due_date ASC LIMIT 5");
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $items[] = ['icon' => 'fa-solid fa-screwdriver-wrench', 'title' => 'Tài sản cần bảo trì: ' . ($row['asset_name'] ?: ('#' . $row['id'])), 'url' => erp_url('modules/assets/index.php'), 'time' => $row['maintenance_due_date'] ?? ''];
-        }
-    }
-
-    usort($items, static fn(array $a, array $b): int => strcmp((string) ($b['time'] ?? ''), (string) ($a['time'] ?? '')));
-    echo json_encode(['count' => count($items), 'items' => $items], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-} catch (Throwable $throwable) {
+    echo json_encode([
+        'success' => true,
+        'unread_count' => $unreadCount,
+        'notifications' => $notifications,
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+} catch (Throwable $e) {
     http_response_code(500);
-    echo json_encode(['count' => 0, 'items' => [], 'message' => $throwable->getMessage()], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    echo json_encode([
+        'success' => false,
+        'message' => $e->getMessage(),
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 }

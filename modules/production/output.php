@@ -1,175 +1,248 @@
 <?php
-require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/auth.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/database.php';
+require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/auth.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/functions.php';
-require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/module_helpers.php';
+requireLogin();
 
-requireRole(['director', 'manager', 'warehouse', 'production']);
-$pdo = erp_db();
-$errors = [];
+requireRole('director', 'accountant', 'manager', 'production', 'warehouse');
+$pdo = getDBConnection();
 
-$jobOrders = $pdo->query("SELECT jo.id, jo.job_code, c.name AS customer_name
-    FROM job_orders jo
-    INNER JOIN customers c ON c.id = jo.customer_id
-    WHERE jo.status IN ('in_progress', 'done')
-    ORDER BY jo.received_date DESC, jo.id DESC")->fetchAll(PDO::FETCH_ASSOC);
-
-$itemSql = "SELECT joi.id, joi.job_order_id, pc.code, pc.name, pc.unit, joi.qty_ok, joi.qty_ng
-    FROM job_order_items joi
-    INNER JOIN product_codes pc ON pc.id = joi.product_code_id
-    ORDER BY joi.job_order_id ASC, joi.id ASC";
-$jobOrderItemMap = [];
-foreach ($pdo->query($itemSql)->fetchAll(PDO::FETCH_ASSOC) as $item) {
-    $jobOrderItemMap[(int) $item['job_order_id']][] = $item;
+if (!function_exists('e')) {
+    function e($value): string
+    {
+        return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+    }
 }
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $jobOrderId = (int) ($_POST['job_order_id'] ?? 0);
-    $outputDate = (string) ($_POST['output_date'] ?? date('Y-m-d'));
-    $outputBy = trim((string) ($_POST['output_by'] ?? erp_current_username()));
-    $itemIds = $_POST['job_order_item_id'] ?? [];
-    $qtyOks = $_POST['qty_ok'] ?? [];
-    $qtyNgs = $_POST['qty_ng'] ?? [];
-
-    if (!erp_validate_csrf($_POST['csrf_token'] ?? null)) {
-        $errors[] = 'CSRF token không hợp lệ.';
+if (!function_exists('formatQty')) {
+    function formatQty($value): string
+    {
+        return number_format((float) $value, 2, ',', '.');
     }
-    if ($jobOrderId <= 0 || $outputDate === '' || $outputBy === '') {
-        $errors[] = 'Vui lòng chọn phiếu gia công, ngày xuất và người xuất.';
+}
+if (!function_exists('nextDocCode')) {
+    function nextDocCode(PDO $pdo, string $prefix, ?string $docDate = null): string
+    {
+        if ($docDate !== null && date('Y-m-d', strtotime($docDate)) === date('Y-m-d') && function_exists('generateDocCode')) {
+            return generateDocCode($pdo, $prefix);
+        }
+        $docDate = $docDate ?: date('Y-m-d');
+        $dateKey = date('Y-m-d', strtotime($docDate));
+        $stmt = $pdo->prepare('SELECT id, last_seq FROM document_sequences WHERE doc_type = ? AND doc_date = ? FOR UPDATE');
+        $stmt->execute([$prefix, $dateKey]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $next = $row ? ((int) $row['last_seq'] + 1) : 1;
+        if ($row) {
+            $pdo->prepare('UPDATE document_sequences SET last_seq = ? WHERE id = ?')->execute([$next, $row['id']]);
+        } else {
+            $pdo->prepare('INSERT INTO document_sequences (doc_type, doc_date, last_seq) VALUES (?, ?, ?)')->execute([$prefix, $dateKey, $next]);
+        }
+        return sprintf('%s-%s-%03d', $prefix, date('Ymd', strtotime($dateKey)), $next);
     }
-
-    $items = [];
-    foreach ($itemIds as $index => $itemId) {
-        $itemId = (int) $itemId;
-        $qtyOk = max(0, (float) ($qtyOks[$index] ?? 0));
-        $qtyNg = max(0, (float) ($qtyNgs[$index] ?? 0));
-        if ($itemId > 0 && ($qtyOk > 0 || $qtyNg > 0)) {
-            $items[] = ['job_order_item_id' => $itemId, 'qty_ok' => $qtyOk, 'qty_ng' => $qtyNg];
+}
+if (!function_exists('adjustWarehouseStock')) {
+    function adjustWarehouseStock(PDO $pdo, int $productId, float $completed, float $defect): void
+    {
+        $stmt = $pdo->prepare('SELECT id, qty_completed, qty_defect FROM warehouse_stock WHERE product_code_id = ? FOR UPDATE');
+        $stmt->execute([$productId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row) {
+            $pdo->prepare('UPDATE warehouse_stock SET qty_completed = ?, qty_defect = ?, updated_at = NOW() WHERE id = ?')->execute([
+                max(0, (float) $row['qty_completed'] + $completed),
+                max(0, (float) $row['qty_defect'] + $defect),
+                $row['id'],
+            ]);
+        } else {
+            $pdo->prepare('INSERT INTO warehouse_stock (product_code_id, qty_pending, qty_completed, qty_defect, updated_at) VALUES (?, 0, ?, ?, NOW())')->execute([$productId, max(0, $completed), max(0, $defect)]);
         }
     }
+}
+if (!function_exists('adjustProductionStock')) {
+    function adjustProductionStock(PDO $pdo, int $productId, string $stockDate, float $pending, float $completed, float $defect): void
+    {
+        $sameDate = $pdo->prepare('SELECT * FROM production_stock WHERE product_code_id = ? AND stock_date = ? ORDER BY id DESC LIMIT 1 FOR UPDATE');
+        $sameDate->execute([$productId, $stockDate]);
+        $row = $sameDate->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            $latest = $pdo->prepare('SELECT * FROM production_stock WHERE product_code_id = ? ORDER BY stock_date DESC, id DESC LIMIT 1 FOR UPDATE');
+            $latest->execute([$productId]);
+            $prev = $latest->fetch(PDO::FETCH_ASSOC) ?: ['qty_pending' => 0, 'qty_completed' => 0, 'qty_defect' => 0];
+            $pdo->prepare('INSERT INTO production_stock (product_code_id, stock_date, qty_pending, qty_completed, qty_defect, updated_at) VALUES (?, ?, ?, ?, ?, NOW())')->execute([$productId, $stockDate, $prev['qty_pending'], $prev['qty_completed'], $prev['qty_defect']]);
+            $sameDate->execute([$productId, $stockDate]);
+            $row = $sameDate->fetch(PDO::FETCH_ASSOC);
+        }
+        $pdo->prepare('UPDATE production_stock SET qty_pending = ?, qty_completed = ?, qty_defect = ?, updated_at = NOW() WHERE id = ?')->execute([
+            max(0, (float) $row['qty_pending'] + $pending),
+            max(0, (float) $row['qty_completed'] + $completed),
+            max(0, (float) $row['qty_defect'] + $defect),
+            $row['id'],
+        ]);
+    }
+}
+if (!function_exists('addWarehouseStockLog')) {
+    function addWarehouseStockLog(PDO $pdo, int $productId, string $date, string $txnType, string $stockType, float $qtyChange, string $refTable, int $refId, string $note, ?int $createdBy): void
+    {
+        $stmt = $pdo->prepare('INSERT INTO warehouse_stock_log (product_code_id, log_date, txn_type, stock_type, qty_change, ref_table, ref_id, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())');
+        $stmt->execute([$productId, $date, $txnType, $stockType, $qtyChange, $refTable, $refId, $note, $createdBy]);
+    }
+}
 
-    if (!$items) {
-        $errors[] = 'Cần ít nhất một dòng sản phẩm xuất kho.';
+$errors = [];
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save_output') {
+    if (!verifyCSRF($_POST['csrf_token'] ?? '')) {
+        setFlash('danger', 'Phiên làm việc đã hết hạn.');
+        header('Location: /ntn_erp/modules/production/output.php');
+        exit;
+    }
+
+    $productionReceiptId = (int) ($_POST['production_receipt_id'] ?? 0);
+    $outputDate = trim((string) ($_POST['output_date'] ?? date('Y-m-d')));
+    $description = trim((string) ($_POST['description'] ?? ''));
+    $quantityCompleted = (float) ($_POST['quantity_completed'] ?? 0);
+    $quantityDefect = (float) ($_POST['quantity_defect'] ?? 0);
+    $quantityDelivered = (float) ($_POST['quantity_delivered'] ?? 0);
+    $note = trim((string) ($_POST['note'] ?? ''));
+    $userId = (int) (currentUser()['id'] ?? 0);
+
+    if ($productionReceiptId <= 0 || $outputDate === '' || ($quantityCompleted + $quantityDefect) <= 0) {
+        $errors[] = 'Vui lòng chọn phiếu nhận và nhập số lượng thành phẩm/lỗi.';
+    }
+    if ($quantityDelivered < 0 || $quantityDelivered > $quantityCompleted) {
+        $errors[] = 'Số lượng giao ngay không được lớn hơn số lượng hoàn thành.';
     }
 
     if (!$errors) {
         try {
             $pdo->beginTransaction();
-            $outputCode = erp_generate_daily_code($pdo, 'warehouse_outputs', 'output_code', 'XK', $outputDate);
-            $stmt = $pdo->prepare('INSERT INTO warehouse_outputs (output_code, job_order_id, output_date, output_by) VALUES (?, ?, ?, ?)');
-            $stmt->execute([$outputCode, $jobOrderId, $outputDate, $outputBy]);
+            $receiptStmt = $pdo->prepare('SELECT pr.*, COALESCE((SELECT SUM(po.quantity_completed + po.quantity_defect) FROM production_outputs po WHERE po.production_receipt_id = pr.id), 0) AS processed_qty FROM production_receipts pr WHERE pr.id = ? FOR UPDATE');
+            $receiptStmt->execute([$productionReceiptId]);
+            $receipt = $receiptStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$receipt) {
+                throw new RuntimeException('Phiếu nhận sản xuất không tồn tại.');
+            }
+            $remaining = (float) $receipt['quantity_received'] - (float) $receipt['processed_qty'];
+            $processedNow = $quantityCompleted + $quantityDefect;
+            if ($processedNow > $remaining + 0.00001) {
+                throw new RuntimeException('Số lượng xử lý vượt quá số lượng đang chờ sản xuất.');
+            }
+
+            $outputNo = nextDocCode($pdo, 'OUT', $outputDate);
+            $insert = $pdo->prepare('INSERT INTO production_outputs (output_no, output_date, production_receipt_id, product_code_id, description, quantity_completed, quantity_defect, quantity_delivered, note, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
+            $insert->execute([$outputNo, $outputDate, $productionReceiptId, $receipt['product_code_id'], $description !== '' ? $description : $receipt['description'], $quantityCompleted, $quantityDefect, $quantityDelivered, $note, $userId ?: null]);
             $outputId = (int) $pdo->lastInsertId();
 
-            $insertItem = $pdo->prepare('INSERT INTO warehouse_output_items (output_id, job_order_item_id, product_code_id, qty_ok, qty_ng) SELECT ?, joi.id, joi.product_code_id, ?, ? FROM job_order_items joi WHERE joi.id = ? AND joi.job_order_id = ?');
-            foreach ($items as $item) {
-                $insertItem->execute([$outputId, $item['qty_ok'], $item['qty_ng'], $item['job_order_item_id'], $jobOrderId]);
+            adjustProductionStock($pdo, (int) $receipt['product_code_id'], $outputDate, -$processedNow, $quantityCompleted, $quantityDefect);
+            $stockCompleted = $quantityCompleted - $quantityDelivered;
+            adjustWarehouseStock($pdo, (int) $receipt['product_code_id'], $stockCompleted, $quantityDefect);
+            if ($stockCompleted > 0) {
+                addWarehouseStockLog($pdo, (int) $receipt['product_code_id'], $outputDate, 'output_completed', 'completed', $stockCompleted, 'production_outputs', $outputId, 'Nhập kho thành phẩm từ sản xuất', $userId ?: null);
             }
+            if ($quantityDefect > 0) {
+                addWarehouseStockLog($pdo, (int) $receipt['product_code_id'], $outputDate, 'output_defect', 'defect', $quantityDefect, 'production_outputs', $outputId, 'Ghi nhận hàng lỗi từ sản xuất', $userId ?: null);
+            }
+
             $pdo->commit();
-            erp_flash('success', 'Đã tạo phiếu xuất kho ' . $outputCode . '.');
-            erp_redirect(erp_url('modules/production/output.php'));
-        } catch (Throwable $throwable) {
+            setFlash('success', 'Đã tạo phiếu xuất thành phẩm ' . $outputNo . '.');
+            header('Location: /ntn_erp/modules/production/output.php');
+            exit;
+        } catch (Throwable $e) {
             if ($pdo->inTransaction()) {
                 $pdo->rollBack();
             }
-            $errors[] = 'Không thể tạo phiếu xuất kho: ' . $throwable->getMessage();
+            $errors[] = $e->getMessage();
         }
     }
 }
 
-$outputs = $pdo->query("SELECT wo.id, wo.output_date, wo.output_by, jo.job_code, c.name AS customer_name
-    FROM warehouse_outputs wo
-    INNER JOIN job_orders jo ON jo.id = wo.job_order_id
-    INNER JOIN customers c ON c.id = jo.customer_id
-    ORDER BY wo.output_date DESC, wo.id DESC
-    LIMIT 30")->fetchAll(PDO::FETCH_ASSOC);
-$csrfToken = erp_csrf_token();
-$flashes = erp_pull_flashes();
+$availableReceipts = $pdo->query("SELECT pr.id, pr.receipt_no, pr.receipt_date, pr.product_code_id, pr.description, pr.quantity_received, pc.product_code, pc.description AS product_name, COALESCE(SUM(po.quantity_completed + po.quantity_defect), 0) AS qty_processed, pr.quantity_received - COALESCE(SUM(po.quantity_completed + po.quantity_defect), 0) AS qty_remaining FROM production_receipts pr INNER JOIN product_codes pc ON pc.id = pr.product_code_id LEFT JOIN production_outputs po ON po.production_receipt_id = pr.id GROUP BY pr.id HAVING qty_remaining > 0 ORDER BY pr.receipt_date DESC, pr.id DESC")->fetchAll(PDO::FETCH_ASSOC);
+$receiptsMap = [];
+foreach ($availableReceipts as $item) {
+    $receiptsMap[$item['id']] = $item;
+}
+$outputs = $pdo->query("SELECT po.*, pr.receipt_no, pc.product_code, pc.description AS product_name FROM production_outputs po INNER JOIN production_receipts pr ON pr.id = po.production_receipt_id INNER JOIN product_codes pc ON pc.id = po.product_code_id ORDER BY po.output_date DESC, po.id DESC")->fetchAll(PDO::FETCH_ASSOC);
+$flash = getFlash();
+$csrfToken = generateCSRF();
 
 include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/header.php';
 include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/sidebar.php';
 ?>
 <div class="container-fluid py-4">
-    <?php erp_render_breadcrumb([
-        ['label' => 'Tổng quan', 'url' => erp_url('dashboard.php')],
-        ['label' => 'Sản xuất', 'url' => erp_url('modules/production/index.php')],
-        ['label' => 'Xuất kho thành phẩm'],
-    ]); ?>
-
-    <div class="d-flex justify-content-between align-items-center mb-3">
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
         <div>
-            <h1 class="h3 mb-1">Xuất kho thành phẩm</h1>
-            <p class="text-muted mb-0">Ghi nhận xuất kho thành phẩm/NG từ phiếu gia công.</p>
+            <h1 class="h3 mb-1">Xuất thành phẩm</h1>
+            <p class="text-muted mb-0">Ghi nhận thành phẩm, hàng lỗi và số lượng giao ngay từ sản xuất.</p>
         </div>
     </div>
 
-    <?php foreach ($flashes as $flash): ?>
-        <div class="alert alert-<?= erp_h($flash['type']) ?> alert-dismissible fade show" role="alert">
-            <?= erp_h($flash['message']) ?>
-            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-        </div>
-    <?php endforeach; ?>
-
-    <?php if ($errors): ?>
-        <div class="alert alert-danger"><ul class="mb-0 ps-3"><?php foreach ($errors as $error): ?><li><?= erp_h($error) ?></li><?php endforeach; ?></ul></div>
-    <?php endif; ?>
+    <?php if ($flash): ?><div class="alert alert-<?= e($flash['type']) ?> alert-dismissible fade show" role="alert"><?= e($flash['message']) ?><button type="button" class="btn-close" data-bs-dismiss="alert"></button></div><?php endif; ?>
+    <?php if ($errors): ?><div class="alert alert-danger"><ul class="mb-0 ps-3"><?php foreach ($errors as $error): ?><li><?= e($error) ?></li><?php endforeach; ?></ul></div><?php endif; ?>
 
     <div class="row g-4">
-        <div class="col-xl-7">
-            <div class="card shadow-sm border-0 h-100">
-                <div class="card-header bg-white"><h2 class="h5 mb-0">Danh sách phiếu xuất kho</h2></div>
+        <div class="col-xl-8">
+            <div class="card shadow-sm border-0">
                 <div class="card-body table-responsive">
                     <table class="table table-hover align-middle mb-0">
-                        <thead class="table-light"><tr><th>Phiếu GC</th><th>Khách hàng</th><th>Ngày xuất</th><th>Người xuất</th></tr></thead>
-                        <tbody>
-                        <?php if (!$outputs): ?><tr><td colspan="4" class="text-center text-muted py-4">Chưa có phiếu xuất kho.</td></tr><?php endif; ?>
-                        <?php foreach ($outputs as $output): ?>
+                        <thead class="table-light">
                             <tr>
-                                <td class="fw-semibold"><?= erp_h($output['job_code']) ?></td>
-                                <td><?= erp_h($output['customer_name']) ?></td>
-                                <td><?= erp_h(erp_format_date($output['output_date'])) ?></td>
-                                <td><?= erp_h($output['output_by']) ?></td>
+                                <th>Mã phiếu</th>
+                                <th>Ngày xuất</th>
+                                <th>Phiếu nhận</th>
+                                <th>Sản phẩm</th>
+                                <th>Hoàn thành</th>
+                                <th>Lỗi</th>
+                                <th>Giao ngay</th>
                             </tr>
-                        <?php endforeach; ?>
+                        </thead>
+                        <tbody>
+                            <?php if (!$outputs): ?>
+                                <tr><td colspan="7" class="text-center text-muted py-4">Chưa có phiếu xuất thành phẩm.</td></tr>
+                            <?php endif; ?>
+                            <?php foreach ($outputs as $output): ?>
+                                <tr>
+                                    <td class="fw-semibold"><?= e($output['output_no']) ?></td>
+                                    <td><?= e(date('d/m/Y', strtotime($output['output_date']))) ?></td>
+                                    <td><?= e($output['receipt_no']) ?></td>
+                                    <td><div><?= e($output['product_code']) ?></div><div class="text-muted small"><?= e($output['product_name']) ?></div></td>
+                                    <td><?= e(formatQty($output['quantity_completed'])) ?></td>
+                                    <td><?= e(formatQty($output['quantity_defect'])) ?></td>
+                                    <td><?= e(formatQty($output['quantity_delivered'])) ?></td>
+                                </tr>
+                            <?php endforeach; ?>
                         </tbody>
                     </table>
                 </div>
             </div>
         </div>
-        <div class="col-xl-5">
+        <div class="col-xl-4">
             <div class="card shadow-sm border-0">
-                <div class="card-header bg-white d-flex justify-content-between align-items-center">
-                    <h2 class="h5 mb-0">Tạo phiếu xuất kho</h2>
-                    <button type="button" class="btn btn-sm btn-outline-primary" id="addOutputRow"><i class="fa-solid fa-plus me-1"></i>Thêm dòng</button>
-                </div>
+                <div class="card-header bg-white"><h2 class="h5 mb-0">Tạo phiếu xuất</h2></div>
                 <div class="card-body">
-                    <form method="post" id="outputForm" class="row g-3">
-                        <input type="hidden" name="csrf_token" value="<?= erp_h($csrfToken) ?>">
+                    <form method="post" class="row g-3">
+                        <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
+                        <input type="hidden" name="action" value="save_output">
                         <div class="col-12">
-                            <label class="form-label">Phiếu gia công</label>
-                            <select class="form-select" name="job_order_id" id="outputJobOrderSelect" required>
-                                <option value="">Chọn phiếu gia công</option>
-                                <?php foreach ($jobOrders as $jobOrder): ?>
-                                    <option value="<?= (int) $jobOrder['id'] ?>"><?= erp_h($jobOrder['job_code'] . ' - ' . $jobOrder['customer_name']) ?></option>
+                            <label class="form-label">Phiếu nhận SX <span class="text-danger">*</span></label>
+                            <select name="production_receipt_id" class="form-select" id="receiptSelect" required>
+                                <option value="">Chọn phiếu nhận</option>
+                                <?php foreach ($availableReceipts as $item): ?>
+                                    <option value="<?= (int) $item['id'] ?>"><?= e($item['receipt_no'] . ' - ' . $item['product_code'] . ' - Còn ' . formatQty($item['qty_remaining'])) ?></option>
                                 <?php endforeach; ?>
                             </select>
                         </div>
-                        <div class="col-md-6">
-                            <label class="form-label">Ngày xuất</label>
-                            <input type="date" class="form-control" name="output_date" value="<?= date('Y-m-d') ?>" required>
+                        <div class="col-12">
+                            <label class="form-label">Sản phẩm</label>
+                            <input type="text" class="form-control" id="receiptProduct" readonly>
                         </div>
-                        <div class="col-md-6">
-                            <label class="form-label">Người xuất</label>
-                            <input type="text" class="form-control" name="output_by" value="<?= erp_h(erp_current_username()) ?>" required>
+                        <div class="col-12">
+                            <label class="form-label">Diễn giải</label>
+                            <textarea name="description" id="outputDescription" class="form-control" rows="2"></textarea>
                         </div>
-                        <div class="col-12 table-responsive">
-                            <table class="table align-middle mb-0">
-                                <thead class="table-light"><tr><th>Job order item</th><th>Product code</th><th>Qty OK</th><th>Qty NG</th><th></th></tr></thead>
-                                <tbody id="outputItemsBody"></tbody>
-                            </table>
-                        </div>
-                        <div class="col-12 d-flex justify-content-end gap-2">
-                            <button class="btn btn-primary" type="submit"><i class="fa-solid fa-floppy-disk me-2"></i>Lưu phiếu xuất</button>
-                        </div>
+                        <div class="col-md-6"><label class="form-label">Ngày xuất <span class="text-danger">*</span></label><input type="date" name="output_date" class="form-control" value="<?= e(date('Y-m-d')) ?>" required></div>
+                        <div class="col-md-6"><label class="form-label">SL còn lại</label><input type="text" class="form-control" id="remainingQty" readonly></div>
+                        <div class="col-md-4"><label class="form-label">SL hoàn thành</label><input type="number" min="0" step="0.01" name="quantity_completed" class="form-control" value="0" required></div>
+                        <div class="col-md-4"><label class="form-label">SL lỗi</label><input type="number" min="0" step="0.01" name="quantity_defect" class="form-control" value="0" required></div>
+                        <div class="col-md-4"><label class="form-label">SL giao ngay</label><input type="number" min="0" step="0.01" name="quantity_delivered" class="form-control" value="0"></div>
+                        <div class="col-12"><label class="form-label">Ghi chú</label><textarea name="note" class="form-control" rows="2"></textarea></div>
+                        <div class="col-12 d-flex gap-2"><button type="submit" class="btn btn-primary flex-fill">Lưu phiếu xuất</button><a href="/ntn_erp/modules/production/output.php" class="btn btn-outline-secondary">Hủy</a></div>
                     </form>
                 </div>
             </div>
@@ -177,43 +250,18 @@ include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/sidebar.php';
     </div>
 </div>
 <script>
-const outputJobOrderItemMap = <?= json_encode($jobOrderItemMap, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
-const outputItemsBody = document.getElementById('outputItemsBody');
-
-function outputOptions(jobOrderId, selectedId = '') {
-    const items = outputJobOrderItemMap[jobOrderId] || [];
-    return '<option value="">Chọn dòng phiếu</option>' + items.map(item => `<option value="${item.id}" ${String(selectedId) === String(item.id) ? 'selected' : ''}>${item.code} - ${item.name}</option>`).join('');
+const receiptsMap = <?= json_encode($receiptsMap, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+const receiptSelect = document.getElementById('receiptSelect');
+const receiptProduct = document.getElementById('receiptProduct');
+const outputDescription = document.getElementById('outputDescription');
+const remainingQty = document.getElementById('remainingQty');
+function syncReceipt() {
+    const item = receiptsMap[receiptSelect.value] || null;
+    receiptProduct.value = item ? `${item.product_code} - ${item.product_name}` : '';
+    outputDescription.value = item ? (item.description || '') : '';
+    remainingQty.value = item ? Number(item.qty_remaining).toLocaleString('vi-VN') : '';
 }
-
-function syncOutputRow(row) {
-    const jobOrderId = document.getElementById('outputJobOrderSelect').value;
-    const items = outputJobOrderItemMap[jobOrderId] || [];
-    const selected = items.find(item => String(item.id) === row.querySelector('.output-item-select').value) || {};
-    row.querySelector('.product-code-cell').textContent = selected.code || '';
-}
-
-function addOutputRow(selectedId = '') {
-    const jobOrderId = document.getElementById('outputJobOrderSelect').value;
-    const row = document.createElement('tr');
-    row.innerHTML = `
-        <td><select class="form-select output-item-select" name="job_order_item_id[]" required>${outputOptions(jobOrderId, selectedId)}</select></td>
-        <td class="product-code-cell"></td>
-        <td><input type="number" min="0" step="0.01" class="form-control" name="qty_ok[]" value="0"></td>
-        <td><input type="number" min="0" step="0.01" class="form-control" name="qty_ng[]" value="0"></td>
-        <td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger remove-output-row"><i class="fa-solid fa-trash"></i></button></td>`;
-    outputItemsBody.appendChild(row);
-    row.querySelector('.output-item-select').addEventListener('change', () => syncOutputRow(row));
-    row.querySelector('.remove-output-row').addEventListener('click', () => row.remove());
-    syncOutputRow(row);
-}
-
-function resetOutputRows() {
-    outputItemsBody.innerHTML = '';
-    addOutputRow();
-}
-
-document.getElementById('outputJobOrderSelect').addEventListener('change', resetOutputRows);
-document.getElementById('addOutputRow').addEventListener('click', () => addOutputRow());
-resetOutputRows();
+receiptSelect.addEventListener('change', syncReceipt);
+syncReceipt();
 </script>
 <?php include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/footer.php'; ?>

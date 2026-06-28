@@ -1,284 +1,279 @@
 <?php
-require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/auth.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/database.php';
+require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/auth.php';
 require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/functions.php';
-require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/module_helpers.php';
+requireLogin();
 
-requireRole(['director', 'manager']);
-$pdo = erp_db();
+requireRole('director', 'accountant', 'manager');
+$pdo = getDBConnection();
 
-$errors = [];
+if (!function_exists('e')) {
+    function e($value): string
+    {
+        return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+    }
+}
+
 $formData = [
     'id' => 0,
-    'code' => '',
-    'name' => '',
-    'phone' => '',
+    'customer_code' => '',
+    'customer_name' => '',
+    'address' => '',
     'contact_person' => '',
+    'phone' => '',
     'email' => '',
-    'tax_code' => '',
     'is_active' => 1,
 ];
-$activeTab = 'list';
+$errors = [];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $action = (string) ($_POST['action'] ?? '');
+    if (!verifyCSRF($_POST['csrf_token'] ?? '')) {
+        setFlash('danger', 'Phiên làm việc đã hết hạn.');
+        header('Location: /ntn_erp/modules/master/customers.php');
+        exit;
+    }
 
-    if (!erp_validate_csrf($_POST['csrf_token'] ?? null)) {
-        $errors[] = 'Phiên làm việc hết hạn. Vui lòng thử lại.';
-    } else {
-        try {
-            if ($action === 'save_customer') {
-                $activeTab = 'form';
-                $formData = [
-                    'id' => (int) ($_POST['id'] ?? 0),
-                    'code' => trim((string) ($_POST['code'] ?? '')),
-                    'name' => trim((string) ($_POST['name'] ?? '')),
-                    'phone' => trim((string) ($_POST['phone'] ?? '')),
-                    'contact_person' => trim((string) ($_POST['contact_person'] ?? '')),
-                    'email' => trim((string) ($_POST['email'] ?? '')),
-                    'tax_code' => trim((string) ($_POST['tax_code'] ?? '')),
-                    'is_active' => isset($_POST['is_active']) ? 1 : 0,
-                ];
+    $action = $_POST['action'] ?? '';
 
-                if ($formData['code'] === '' || $formData['name'] === '') {
-                    $errors[] = 'Mã khách hàng và tên khách hàng là bắt buộc.';
-                }
+    if ($action === 'save_customer') {
+        $formData = [
+            'id' => (int) ($_POST['id'] ?? 0),
+            'customer_code' => trim((string) ($_POST['customer_code'] ?? '')),
+            'customer_name' => trim((string) ($_POST['customer_name'] ?? '')),
+            'address' => trim((string) ($_POST['address'] ?? '')),
+            'contact_person' => trim((string) ($_POST['contact_person'] ?? '')),
+            'phone' => trim((string) ($_POST['phone'] ?? '')),
+            'email' => trim((string) ($_POST['email'] ?? '')),
+            'is_active' => isset($_POST['is_active']) ? 1 : 0,
+        ];
 
-                if (!$errors) {
-                    if ($formData['id'] > 0) {
-                        $stmt = $pdo->prepare('UPDATE customers SET code = ?, name = ?, phone = ?, contact_person = ?, email = ?, tax_code = ?, is_active = ?, updated_at = NOW() WHERE id = ?');
-                        $stmt->execute([
-                            $formData['code'],
-                            $formData['name'],
-                            $formData['phone'],
-                            $formData['contact_person'],
-                            $formData['email'],
-                            $formData['tax_code'],
-                            $formData['is_active'],
-                            $formData['id'],
-                        ]);
-                        erp_flash('success', 'Đã cập nhật khách hàng.');
-                    } else {
-                        $stmt = $pdo->prepare('INSERT INTO customers (code, name, phone, contact_person, email, tax_code, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
-                        $stmt->execute([
-                            $formData['code'],
-                            $formData['name'],
-                            $formData['phone'],
-                            $formData['contact_person'],
-                            $formData['email'],
-                            $formData['tax_code'],
-                            $formData['is_active'],
-                        ]);
-                        erp_flash('success', 'Đã thêm khách hàng mới.');
-                    }
-
-                    erp_redirect(erp_url('modules/master/customers.php'));
-                }
-            }
-
-            if ($action === 'toggle_customer') {
-                $customerId = (int) ($_POST['customer_id'] ?? 0);
-                $stmt = $pdo->prepare('UPDATE customers SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END, updated_at = NOW() WHERE id = ?');
-                $stmt->execute([$customerId]);
-                erp_flash('success', 'Đã cập nhật trạng thái khách hàng.');
-                erp_redirect(erp_url('modules/master/customers.php'));
-            }
-
-            if ($action === 'delete_customer') {
-                $customerId = (int) ($_POST['customer_id'] ?? 0);
-                $stmt = $pdo->prepare('DELETE FROM customers WHERE id = ?');
-                $stmt->execute([$customerId]);
-                erp_flash('success', 'Đã xóa khách hàng.');
-                erp_redirect(erp_url('modules/master/customers.php'));
-            }
-        } catch (PDOException $exception) {
-            $errors[] = 'Không thể lưu dữ liệu khách hàng: ' . $exception->getMessage();
+        if ($formData['customer_code'] === '' || $formData['customer_name'] === '') {
+            $errors[] = 'Vui lòng nhập mã và tên khách hàng.';
         }
+
+        if ($formData['email'] !== '' && !filter_var($formData['email'], FILTER_VALIDATE_EMAIL)) {
+            $errors[] = 'Email không hợp lệ.';
+        }
+
+        $dupStmt = $pdo->prepare('SELECT id FROM customers WHERE customer_code = ? AND id <> ? LIMIT 1');
+        $dupStmt->execute([$formData['customer_code'], $formData['id']]);
+        if ($dupStmt->fetch()) {
+            $errors[] = 'Mã khách hàng đã tồn tại.';
+        }
+
+        if (!$errors) {
+            $userId = (int) (currentUser()['id'] ?? 0);
+            if ($formData['id'] > 0) {
+                $stmt = $pdo->prepare('UPDATE customers SET customer_code = ?, customer_name = ?, address = ?, contact_person = ?, phone = ?, email = ?, is_active = ?, updated_at = NOW() WHERE id = ?');
+                $stmt->execute([
+                    $formData['customer_code'],
+                    $formData['customer_name'],
+                    $formData['address'],
+                    $formData['contact_person'],
+                    $formData['phone'],
+                    $formData['email'],
+                    $formData['is_active'],
+                    $formData['id'],
+                ]);
+                setFlash('success', 'Đã cập nhật khách hàng.');
+            } else {
+                $stmt = $pdo->prepare('INSERT INTO customers (customer_code, customer_name, address, contact_person, phone, email, is_active, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())');
+                $stmt->execute([
+                    $formData['customer_code'],
+                    $formData['customer_name'],
+                    $formData['address'],
+                    $formData['contact_person'],
+                    $formData['phone'],
+                    $formData['email'],
+                    $formData['is_active'],
+                    $userId ?: null,
+                ]);
+                setFlash('success', 'Đã thêm khách hàng mới.');
+            }
+
+            header('Location: /ntn_erp/modules/master/customers.php');
+            exit;
+        }
+    }
+
+    if ($action === 'toggle_active') {
+        $id = (int) ($_POST['id'] ?? 0);
+        $stmt = $pdo->prepare('UPDATE customers SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END, updated_at = NOW() WHERE id = ?');
+        $stmt->execute([$id]);
+        setFlash('success', 'Đã cập nhật trạng thái khách hàng.');
+        header('Location: /ntn_erp/modules/master/customers.php');
+        exit;
     }
 }
 
 $editId = (int) ($_GET['edit'] ?? 0);
 if ($editId > 0 && $formData['id'] === 0) {
-    $stmt = $pdo->prepare('SELECT * FROM customers WHERE id = ?');
+    $stmt = $pdo->prepare('SELECT * FROM customers WHERE id = ? LIMIT 1');
     $stmt->execute([$editId]);
     $record = $stmt->fetch(PDO::FETCH_ASSOC);
     if ($record) {
         $formData = array_merge($formData, $record, ['id' => (int) $record['id']]);
-        $activeTab = 'form';
     }
 }
 
 $keyword = trim((string) ($_GET['keyword'] ?? ''));
-$sql = 'SELECT c.*, (SELECT COUNT(*) FROM job_orders jo WHERE jo.customer_id = c.id) AS job_order_count FROM customers c WHERE 1=1';
+$sql = 'SELECT id, customer_code, customer_name, phone, address, contact_person, email, is_active FROM customers WHERE 1=1';
 $params = [];
 if ($keyword !== '') {
-    $sql .= ' AND (c.name LIKE ? OR c.code LIKE ?)';
+    $sql .= ' AND (customer_code LIKE ? OR customer_name LIKE ?)';
     $params[] = '%' . $keyword . '%';
     $params[] = '%' . $keyword . '%';
 }
-$sql .= ' ORDER BY c.name ASC';
+$sql .= ' ORDER BY customer_name ASC, id DESC';
 $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $customers = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-$flashes = erp_pull_flashes();
-$csrfToken = erp_csrf_token();
+$flash = getFlash();
+$csrfToken = generateCSRF();
 
 include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/header.php';
 include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/sidebar.php';
 ?>
 <div class="container-fluid py-4">
-    <?php erp_render_breadcrumb([
-        ['label' => 'Tổng quan', 'url' => erp_url('dashboard.php')],
-        ['label' => 'Sản xuất', 'url' => erp_url('modules/production/index.php')],
-        ['label' => 'Danh mục KH'],
-    ]); ?>
-
-    <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-3">
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
         <div>
-            <h1 class="h3 mb-1">Quản lý khách hàng</h1>
-            <p class="text-muted mb-0">Theo dõi khách hàng, trạng thái hoạt động và lịch sử phiếu gia công.</p>
+            <h1 class="h3 mb-1">Danh mục khách hàng</h1>
+            <p class="text-muted mb-0">Quản lý thông tin khách hàng theo mã và trạng thái hoạt động.</p>
         </div>
-        <a class="btn btn-primary" href="#customer-form-tab" data-bs-toggle="tab"><i class="fa-solid fa-plus me-2"></i>Thêm khách hàng</a>
+        <a href="/ntn_erp/modules/master/customers.php" class="btn btn-outline-secondary">Làm mới</a>
     </div>
 
-    <?php foreach ($flashes as $flash): ?>
-        <div class="alert alert-<?= erp_h($flash['type']) ?> alert-dismissible fade show" role="alert">
-            <?= erp_h($flash['message']) ?>
+    <?php if ($flash): ?>
+        <div class="alert alert-<?= e($flash['type']) ?> alert-dismissible fade show" role="alert">
+            <?= e($flash['message']) ?>
             <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
         </div>
-    <?php endforeach; ?>
+    <?php endif; ?>
 
     <?php if ($errors): ?>
         <div class="alert alert-danger">
             <ul class="mb-0 ps-3">
                 <?php foreach ($errors as $error): ?>
-                    <li><?= erp_h($error) ?></li>
+                    <li><?= e($error) ?></li>
                 <?php endforeach; ?>
             </ul>
         </div>
     <?php endif; ?>
 
-    <div class="card shadow-sm border-0">
-        <div class="card-header bg-white border-0 pt-3">
-            <ul class="nav nav-tabs card-header-tabs" role="tablist">
-                <li class="nav-item" role="presentation">
-                    <button class="nav-link <?= $activeTab === 'list' ? 'active' : '' ?>" id="customer-list-tab" data-bs-toggle="tab" data-bs-target="#customer-list-pane" type="button">Danh sách KH</button>
-                </li>
-                <li class="nav-item" role="presentation">
-                    <button class="nav-link <?= $activeTab === 'form' ? 'active' : '' ?>" id="customer-form-tab" data-bs-toggle="tab" data-bs-target="#customer-form-pane" type="button">Thêm/Sửa</button>
-                </li>
-            </ul>
-        </div>
-        <div class="card-body tab-content">
-            <div class="tab-pane fade <?= $activeTab === 'list' ? 'show active' : '' ?>" id="customer-list-pane">
-                <form class="row g-3 mb-3" method="get">
-                    <div class="col-md-5">
-                        <label class="form-label">Tìm theo mã / tên khách hàng</label>
-                        <input type="text" class="form-control" name="keyword" value="<?= erp_h($keyword) ?>" placeholder="VD: KH-001 hoặc NTN Vietnam">
-                    </div>
-                    <div class="col-md-3 align-self-end d-flex gap-2">
-                        <button class="btn btn-outline-primary" type="submit"><i class="fa-solid fa-magnifying-glass me-2"></i>Lọc</button>
-                        <a class="btn btn-outline-secondary" href="<?= erp_h(erp_url('modules/master/customers.php')) ?>">Đặt lại</a>
-                    </div>
-                </form>
+    <div class="row g-4">
+        <div class="col-lg-8">
+            <div class="card shadow-sm border-0">
+                <div class="card-body">
+                    <form method="get" class="row g-3 mb-3">
+                        <div class="col-md-8">
+                            <label class="form-label">Tìm theo mã / tên khách hàng</label>
+                            <input type="text" name="keyword" class="form-control" value="<?= e($keyword) ?>" placeholder="VD: KH001 hoặc Công ty ABC">
+                        </div>
+                        <div class="col-md-4 d-flex gap-2 align-items-end">
+                            <button type="submit" class="btn btn-primary flex-fill">Tìm kiếm</button>
+                            <a href="/ntn_erp/modules/master/customers.php" class="btn btn-outline-secondary">Reset</a>
+                        </div>
+                    </form>
 
-                <div class="table-responsive">
-                    <table class="table table-hover align-middle">
-                        <thead class="table-light">
-                        <tr>
-                            <th>Mã KH</th>
-                            <th>Tên khách hàng</th>
-                            <th>Điện thoại</th>
-                            <th>Người liên hệ</th>
-                            <th>Email</th>
-                            <th>MST</th>
-                            <th>Trạng thái</th>
-                            <th class="text-end">Actions</th>
-                        </tr>
-                        </thead>
-                        <tbody>
-                        <?php if (!$customers): ?>
-                            <tr><td colspan="8" class="text-center text-muted py-4">Chưa có khách hàng.</td></tr>
-                        <?php endif; ?>
-                        <?php foreach ($customers as $customer): ?>
-                            <tr>
-                                <td class="fw-semibold"><?= erp_h($customer['code']) ?></td>
-                                <td>
-                                    <div><?= erp_h($customer['name']) ?></div>
-                                    <a class="small text-decoration-none" href="<?= erp_h(erp_url('modules/production/job_orders.php?customer_id=' . (int) $customer['id'])) ?>">Xem lịch sử phiếu GC (<?= (int) $customer['job_order_count'] ?>)</a>
-                                </td>
-                                <td><?= erp_h($customer['phone']) ?></td>
-                                <td><?= erp_h($customer['contact_person']) ?></td>
-                                <td><?= erp_h($customer['email']) ?></td>
-                                <td><?= erp_h($customer['tax_code']) ?></td>
-                                <td>
-                                    <form method="post" class="d-inline">
-                                        <input type="hidden" name="csrf_token" value="<?= erp_h($csrfToken) ?>">
-                                        <input type="hidden" name="action" value="toggle_customer">
-                                        <input type="hidden" name="customer_id" value="<?= (int) $customer['id'] ?>">
-                                        <button type="submit" class="btn btn-sm <?= (int) $customer['is_active'] === 1 ? 'btn-outline-success' : 'btn-outline-secondary' ?>">
-                                            <?= (int) $customer['is_active'] === 1 ? 'Đang hoạt động' : 'Ngưng hoạt động' ?>
-                                        </button>
-                                    </form>
-                                </td>
-                                <td class="text-end">
-                                    <div class="btn-group btn-group-sm">
-                                        <a class="btn btn-outline-primary" href="<?= erp_h(erp_url('modules/master/customers.php?edit=' . (int) $customer['id'])) ?>"><i class="fa-regular fa-pen-to-square"></i></a>
-                                        <form method="post" onsubmit="return confirm('Xóa khách hàng này?');">
-                                            <input type="hidden" name="csrf_token" value="<?= erp_h($csrfToken) ?>">
-                                            <input type="hidden" name="action" value="delete_customer">
-                                            <input type="hidden" name="customer_id" value="<?= (int) $customer['id'] ?>">
-                                            <button class="btn btn-outline-danger" type="submit"><i class="fa-regular fa-trash-can"></i></button>
-                                        </form>
-                                    </div>
-                                </td>
-                            </tr>
-                        <?php endforeach; ?>
-                        </tbody>
-                    </table>
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Mã KH</th>
+                                    <th>Tên khách hàng</th>
+                                    <th>Điện thoại</th>
+                                    <th>Địa chỉ</th>
+                                    <th>Người liên hệ</th>
+                                    <th>Email</th>
+                                    <th>Trạng thái</th>
+                                    <th class="text-end">Thao tác</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php if (!$customers): ?>
+                                    <tr><td colspan="8" class="text-center text-muted py-4">Chưa có khách hàng.</td></tr>
+                                <?php endif; ?>
+                                <?php foreach ($customers as $customer): ?>
+                                    <tr>
+                                        <td class="fw-semibold"><?= e($customer['customer_code']) ?></td>
+                                        <td><?= e($customer['customer_name']) ?></td>
+                                        <td><?= e($customer['phone']) ?></td>
+                                        <td><?= e($customer['address']) ?></td>
+                                        <td><?= e($customer['contact_person']) ?></td>
+                                        <td><?= e($customer['email']) ?></td>
+                                        <td>
+                                            <span class="badge text-bg-<?= (int) $customer['is_active'] === 1 ? 'success' : 'secondary' ?>">
+                                                <?= (int) $customer['is_active'] === 1 ? 'Đang hoạt động' : 'Ngưng hoạt động' ?>
+                                            </span>
+                                        </td>
+                                        <td class="text-end">
+                                            <div class="btn-group btn-group-sm">
+                                                <a href="/ntn_erp/modules/master/customers.php?edit=<?= (int) $customer['id'] ?>" class="btn btn-outline-primary">Sửa</a>
+                                                <form method="post" class="d-inline">
+                                                    <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
+                                                    <input type="hidden" name="action" value="toggle_active">
+                                                    <input type="hidden" name="id" value="<?= (int) $customer['id'] ?>">
+                                                    <button type="submit" class="btn btn-outline-secondary">Bật/Tắt</button>
+                                                </form>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
-            <div class="tab-pane fade <?= $activeTab === 'form' ? 'show active' : '' ?>" id="customer-form-pane">
-                <form method="post" class="row g-3">
-                    <input type="hidden" name="csrf_token" value="<?= erp_h($csrfToken) ?>">
-                    <input type="hidden" name="action" value="save_customer">
-                    <input type="hidden" name="id" value="<?= (int) $formData['id'] ?>">
-                    <div class="col-md-4">
-                        <label class="form-label">Mã khách hàng <span class="text-danger">*</span></label>
-                        <input type="text" class="form-control" name="code" value="<?= erp_h($formData['code']) ?>" required>
-                    </div>
-                    <div class="col-md-8">
-                        <label class="form-label">Tên khách hàng <span class="text-danger">*</span></label>
-                        <input type="text" class="form-control" name="name" value="<?= erp_h($formData['name']) ?>" required>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Điện thoại</label>
-                        <input type="text" class="form-control" name="phone" value="<?= erp_h($formData['phone']) ?>">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Người liên hệ</label>
-                        <input type="text" class="form-control" name="contact_person" value="<?= erp_h($formData['contact_person']) ?>">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Email</label>
-                        <input type="email" class="form-control" name="email" value="<?= erp_h($formData['email']) ?>">
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label">Mã số thuế</label>
-                        <input type="text" class="form-control" name="tax_code" value="<?= erp_h($formData['tax_code']) ?>">
-                    </div>
-                    <div class="col-md-6 d-flex align-items-end">
-                        <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" id="is_active" name="is_active" <?= (int) $formData['is_active'] === 1 ? 'checked' : '' ?>>
-                            <label class="form-check-label" for="is_active">Đang hoạt động</label>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="card shadow-sm border-0">
+                <div class="card-header bg-white">
+                    <h2 class="h5 mb-0"><?= $formData['id'] > 0 ? 'Cập nhật khách hàng' : 'Thêm khách hàng' ?></h2>
+                </div>
+                <div class="card-body">
+                    <form method="post" class="row g-3">
+                        <input type="hidden" name="csrf_token" value="<?= e($csrfToken) ?>">
+                        <input type="hidden" name="action" value="save_customer">
+                        <input type="hidden" name="id" value="<?= (int) $formData['id'] ?>">
+
+                        <div class="col-12">
+                            <label class="form-label">Mã khách hàng <span class="text-danger">*</span></label>
+                            <input type="text" name="customer_code" class="form-control" value="<?= e($formData['customer_code']) ?>" required>
                         </div>
-                    </div>
-                    <div class="col-12 d-flex gap-2">
-                        <button class="btn btn-primary" type="submit"><i class="fa-solid fa-floppy-disk me-2"></i>Lưu khách hàng</button>
-                        <a class="btn btn-outline-secondary" href="<?= erp_h(erp_url('modules/master/customers.php')) ?>">Làm mới</a>
-                    </div>
-                </form>
+                        <div class="col-12">
+                            <label class="form-label">Tên khách hàng <span class="text-danger">*</span></label>
+                            <input type="text" name="customer_name" class="form-control" value="<?= e($formData['customer_name']) ?>" required>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Địa chỉ</label>
+                            <textarea name="address" class="form-control" rows="2"><?= e($formData['address']) ?></textarea>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Người liên hệ</label>
+                            <input type="text" name="contact_person" class="form-control" value="<?= e($formData['contact_person']) ?>">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Điện thoại</label>
+                            <input type="text" name="phone" class="form-control" value="<?= e($formData['phone']) ?>">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Email</label>
+                            <input type="email" name="email" class="form-control" value="<?= e($formData['email']) ?>">
+                        </div>
+                        <div class="col-12">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="customerActive" name="is_active" <?= (int) $formData['is_active'] === 1 ? 'checked' : '' ?>>
+                                <label class="form-check-label" for="customerActive">Đang hoạt động</label>
+                            </div>
+                        </div>
+                        <div class="col-12 d-flex gap-2">
+                            <button type="submit" class="btn btn-primary flex-fill">Lưu khách hàng</button>
+                            <a href="/ntn_erp/modules/master/customers.php" class="btn btn-outline-secondary">Hủy</a>
+                        </div>
+                    </form>
+                </div>
             </div>
         </div>
     </div>

@@ -191,7 +191,7 @@ include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/sidebar.php';
     </div>
 </div>
 <script>
-const outputJobOrderItemMap = <?= json_encode($jobOrderItemMap, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+const outputJobOrderItemMap = <?= json_encode($jobOrderItemMap, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG) ?>;
 const outputItemsBody = document.getElementById('outputItemsBody');
 
 function outputOptions(jobOrderId, selectedId = '') {
@@ -215,9 +215,14 @@ function addOutputRow() {
 
 document.getElementById('outputJobOrderSelect').addEventListener('change', function () {
     outputItemsBody.innerHTML = '';
+    if (this.value) { addOutputRow(); }
+});
+document.getElementById('addOutputRow').addEventListener('click', function () {
+    if (!document.getElementById('outputJobOrderSelect').value) {
+        alert('Vui lòng chọn phiếu gia công trước.');
+        return;
+    }
     addOutputRow();
 });
-document.getElementById('addOutputRow').addEventListener('click', addOutputRow);
-addOutputRow();
 </script>
 <?php include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/footer.php'; ?>

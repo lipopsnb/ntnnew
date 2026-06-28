@@ -185,7 +185,7 @@ include $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/includes/sidebar.php';
     </div>
 </div>
 <script>
-const receiptItemsMap = <?= json_encode($jobOrderItemsMap, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+const receiptItemsMap = <?= json_encode($jobOrderItemsMap, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG) ?>;
 function renderReceiptItems(jobOrderId) {
     const body = document.getElementById('receiptItemsBody');
     const items = receiptItemsMap[jobOrderId] || [];

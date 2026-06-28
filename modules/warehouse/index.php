@@ -10,11 +10,25 @@ $pdo = erp_db();
 $today = date('Y-m-d');
 $monthStart = date('Y-m-01');
 
-$receiptsToday = (int) $pdo->prepare('SELECT COUNT(*) FROM warehouse_receipts WHERE receipt_date = ?')->execute([$today]) ? $pdo->query("SELECT COUNT(*) FROM warehouse_receipts WHERE receipt_date = '$today'")->fetchColumn() : 0;
-$outputsToday  = (int) $pdo->query("SELECT COUNT(*) FROM warehouse_outputs WHERE output_date = '$today'")->fetchColumn();
-$deliveriesToday = (int) $pdo->query("SELECT COUNT(*) FROM deliveries WHERE delivery_date = '$today'")->fetchColumn();
-$pendingReceipt = (int) $pdo->query("SELECT COUNT(*) FROM job_orders WHERE status = 'draft'")->fetchColumn();
-$inProgress    = (int) $pdo->query("SELECT COUNT(*) FROM job_orders WHERE status = 'in_progress'")->fetchColumn();
+$stmtRT = $pdo->prepare('SELECT COUNT(*) FROM warehouse_receipts WHERE receipt_date = ?');
+$stmtRT->execute([$today]);
+$receiptsToday = (int) $stmtRT->fetchColumn();
+
+$stmtOT = $pdo->prepare('SELECT COUNT(*) FROM warehouse_outputs WHERE output_date = ?');
+$stmtOT->execute([$today]);
+$outputsToday = (int) $stmtOT->fetchColumn();
+
+$stmtDT = $pdo->prepare('SELECT COUNT(*) FROM deliveries WHERE delivery_date = ?');
+$stmtDT->execute([$today]);
+$deliveriesToday = (int) $stmtDT->fetchColumn();
+
+$stmtP = $pdo->prepare("SELECT COUNT(*) FROM job_orders WHERE status = 'draft'");
+$stmtP->execute();
+$pendingReceipt = (int) $stmtP->fetchColumn();
+
+$stmtIP = $pdo->prepare("SELECT COUNT(*) FROM job_orders WHERE status = 'in_progress'");
+$stmtIP->execute();
+$inProgress = (int) $stmtIP->fetchColumn();
 
 // Thống kê tháng
 $stmtR = $pdo->prepare('SELECT COUNT(*) FROM warehouse_receipts WHERE receipt_date >= ?');

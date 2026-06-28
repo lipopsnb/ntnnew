@@ -27,7 +27,7 @@ if (!erp_validate_csrf($_POST['csrf_token'] ?? null)) {
 $customerId  = (int) ($_POST['customer_id']  ?? 0);
 $invoiceDate = trim((string) ($_POST['invoice_date'] ?? date('Y-m-d')));
 $dueDate     = trim((string) ($_POST['due_date'] ?? '')) ?: null;
-$taxRate     = (float) ($_POST['tax_rate'] ?? 0);
+$taxRate     = (int) ($_POST['tax_rate'] ?? 0);
 $note        = trim((string) ($_POST['note'] ?? '')) ?: null;
 $deliveryIds = array_map('intval', (array) ($_POST['delivery_ids'] ?? []));
 $deliveryIds = array_filter($deliveryIds, static fn(int $v): bool => $v > 0);
@@ -39,7 +39,7 @@ if ($customerId <= 0 || $invoiceDate === '' || empty($deliveryIds)) {
 }
 
 // Chỉ cho phép VAT 0% hoặc 8%
-if (!in_array((int) $taxRate, [0, 8], true)) {
+if (!in_array($taxRate, [0, 8], true)) {
     echo json_encode(['ok' => false, 'msg' => 'Thuế suất chỉ được phép là 0% hoặc 8%']);
     exit;
 }
@@ -90,7 +90,7 @@ try {
     // delivery_id backward compat: dùng delivery đầu tiên nếu chỉ có 1
     $backCompatDeliveryId = count($deliveryIds) === 1 ? $deliveryIds[0] : null;
 
-    $status = ($dueDate && strtotime($dueDate) < strtotime(date('Y-m-d'))) ? 'unpaid' : 'unpaid';
+    $status = 'unpaid';
 
     $insInvoice = $pdo->prepare("
         INSERT INTO invoices

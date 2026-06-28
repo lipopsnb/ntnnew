@@ -260,7 +260,8 @@ if (!function_exists('erp_generate_daily_code')) {
             throw new InvalidArgumentException('Invalid table or column name.');
         }
 
-        $dateStr = $date ? date('Y-m-d', strtotime($date)) : date('Y-m-d');
+        $ts = $date ? strtotime($date) : false;
+        $dateStr = $ts !== false ? date('Y-m-d', $ts) : date('Y-m-d');
         $like = sprintf('%s-%s-%%', $prefix, $dateStr);
         $sql = "SELECT {$column} FROM {$table} WHERE {$column} LIKE ? ORDER BY {$column} DESC LIMIT 1";
         $stmt = $pdo->prepare($sql);

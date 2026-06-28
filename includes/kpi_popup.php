@@ -1,60 +1,90 @@
 <?php
+declare(strict_types=1);
+
+require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../config/auth.php';
+require_once __DIR__ . '/../config/functions.php';
+
+requireLogin();
+
+$pdo = getDBConnection();
 $user = currentUser();
-if (!$user || !hasRole('director', 'accountant', 'manager', 'warehouse', 'production')) return;
-
-$pdo   = getDBConnection();
 $today = date('Y-m-d');
-$hour  = (int)date('H');
 
-if ($hour < 17) return;
+$stmt = $pdo->prepare(
+    'SELECT ka.kpi_target, ka.over_bonus_pct, kr.actual_qty, kr.salary_per_day, kr.salary_actual, kr.is_deducted, kr.reason, kr.confirmed_at
+     FROM kpi_assignments ka
+     INNER JOIN kpi_results kr ON kr.kpi_assignment_id = ka.id
+     WHERE ka.user_id = ? AND ka.assign_date = ?
+     LIMIT 1'
+);
+$stmt->execute([$user['user_id'], $today]);
+$kpiResult = $stmt->fetch(PDO::FETCH_ASSOC);
 
-$stmt = $pdo->prepare("
-    SELECT COUNT(*) FROM kpi_assignments ka
-    LEFT JOIN kpi_results kr ON kr.kpi_assignment_id = ka.id
-    WHERE ka.assign_date = ?
-    AND kr.id IS NULL
-");
-$stmt->execute([$today]);
-$pendingCount = $stmt->fetchColumn();
+if (!$kpiResult) {
+    return;
+}
 
-if ($pendingCount == 0) return;
+$popupKey = 'ntn_kpi_popup_' . $today;
 ?>
-<div class="modal fade" id="modalKpiWarning" tabindex="-1" data-bs-backdrop="static">
+<div class="modal fade" id="kpiTodayModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content border-warning border-2">
-            <div class="modal-header bg-warning">
-                <h5 class="modal-title fw-bold">
-                    <i class="fas fa-exclamation-triangle me-2"></i>
-                    Chưa nhập kết quả KPI!
-                </h5>
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header bg-primary text-white">
+                <h5 class="modal-title"><i class="fa-solid fa-chart-line me-2"></i>Kết quả KPI hôm nay</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Đóng"></button>
             </div>
-            <div class="modal-body text-center py-4">
-                <i class="fas fa-clipboard-list fa-4x text-warning mb-3 d-block"></i>
-                <h5>Còn <span class="text-danger fw-bold"><?= $pendingCount ?></span>
-                    nhân viên chưa có kết quả KPI hôm nay</h5>
-                <p class="text-muted mb-0">
-                    Vui lòng kiểm tra và nhập kết quả KPI
-                    cho nhân viên sản xuất ngày
-                    <strong><?= date('d/m/Y') ?></strong>
-                </p>
-            </div>
-            <div class="modal-footer justify-content-center gap-2">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
-                    <i class="fas fa-times me-1"></i>Để sau
-                </button>
-                <a href="/ntn_erp/modules/kpi/result.php?date=<?= $today ?>"
-                   class="btn btn-warning fw-bold">
-                    <i class="fas fa-clipboard-check me-1"></i>
-                    Nhập kết quả KPI ngay
-                </a>
+            <div class="modal-body">
+                <p class="mb-3">Kết quả KPI ngày <strong><?= e(formatDate($today)) ?></strong> của bạn đã được cập nhật.</p>
+                <div class="row g-3 small">
+                    <div class="col-6">
+                        <div class="kpi-summary-box">
+                            <div class="text-muted">Mục tiêu</div>
+                            <div class="fw-bold fs-5"><?= e($kpiResult['kpi_target']) ?></div>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="kpi-summary-box">
+                            <div class="text-muted">Thực tế</div>
+                            <div class="fw-bold fs-5"><?= e($kpiResult['actual_qty']) ?></div>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="kpi-summary-box">
+                            <div class="text-muted">Lương/ngày</div>
+                            <div class="fw-bold"><?= e(formatMoney($kpiResult['salary_per_day'])) ?> VNĐ</div>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="kpi-summary-box">
+                            <div class="text-muted">Thực nhận KPI</div>
+                            <div class="fw-bold text-success"><?= e(formatMoney($kpiResult['salary_actual'])) ?> VNĐ</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="mt-3 small">
+                    <div><strong>Thưởng vượt:</strong> <?= e($kpiResult['over_bonus_pct']) ?>%</div>
+                    <div><strong>Khấu trừ:</strong> <?= !empty($kpiResult['is_deducted']) ? 'Có' : 'Không' ?></div>
+                    <?php if (!empty($kpiResult['reason'])): ?>
+                        <div><strong>Ghi chú:</strong> <?= e($kpiResult['reason']) ?></div>
+                    <?php endif; ?>
+                </div>
             </div>
         </div>
     </div>
 </div>
 <script>
-    window.addEventListener('load', () => {
-        bootstrap.Modal.getOrCreateInstance(
-            document.getElementById('modalKpiWarning')
-        ).show();
-    });
+document.addEventListener('DOMContentLoaded', function () {
+    const storageKey = <?= json_encode($popupKey) ?>;
+    const modalElement = document.getElementById('kpiTodayModal');
+    if (!modalElement || localStorage.getItem(storageKey) === 'dismissed') {
+        return;
+    }
+
+    const modal = new bootstrap.Modal(modalElement);
+    modal.show();
+    modalElement.addEventListener('hidden.bs.modal', function () {
+        localStorage.setItem(storageKey, 'dismissed');
+    }, { once: true });
+});
 </script>

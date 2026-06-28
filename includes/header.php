@@ -1,53 +1,91 @@
 <?php
-if (session_status() === PHP_SESSION_NONE) {
-    require_once $_SERVER['DOCUMENT_ROOT'] . '/ntn_erp/config/auth.php';
-}
+declare(strict_types=1);
+
+require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../config/auth.php';
+require_once __DIR__ . '/../config/functions.php';
+
+requireLogin();
+
+$pdo = getDBConnection();
 $user = currentUser();
+$badge = getRoleBadge($user['role'] ?? '');
+$pageTitle = $pageTitle ?? 'NTN ERP';
+
+$countStmt = $pdo->prepare('SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = ?');
+$countStmt->execute([$user['user_id'], 0]);
+$unreadNotificationCount = (int) $countStmt->fetchColumn();
+
+$listStmt = $pdo->prepare('SELECT id, title, message, type, reference_id, created_at FROM notifications WHERE user_id = ? AND is_read = ? ORDER BY created_at DESC LIMIT 5');
+$listStmt->execute([$user['user_id'], 0]);
+$headerNotifications = $listStmt->fetchAll(PDO::FETCH_ASSOC);
 ?>
-<!DOCTYPE html>
+<!doctype html>
 <html lang="vi">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ERP System</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title><?= e($pageTitle) ?></title>
+    <meta name="csrf-token" content="<?= e(generateCSRF()) ?>">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css" rel="stylesheet">
     <link href="/ntn_erp/assets/css/style.css" rel="stylesheet">
 </head>
 <body>
-<!-- Top Navbar -->
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top" style="z-index:1030;">
+<nav class="navbar navbar-expand-lg navbar-dark navbar-ntn sticky-top shadow-sm">
     <div class="container-fluid">
-        <button class="btn btn-sm text-white me-2" id="sidebarToggle">
-            <i class="fas fa-bars"></i>
+        <button class="btn btn-outline-light btn-sm me-2 d-lg-inline-flex" id="sidebarToggle" type="button" aria-label="Thu gọn menu">
+            <i class="fa-solid fa-bars"></i>
         </button>
-        <a class="navbar-brand fw-bold" href="/ntn_erp/dashboard.php">🏢 ERP System</a>
+        <a class="navbar-brand fw-semibold" href="/ntn_erp/dashboard.php">🏭 NTN ERP</a>
+
         <div class="ms-auto d-flex align-items-center gap-3">
-            <!-- Thông báo -->
             <div class="dropdown">
-                <button class="btn btn-sm btn-outline-light position-relative" data-bs-toggle="dropdown">
-                    <i class="fas fa-bell"></i>
-                    <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger" id="notifCount" style="display:none;">0</span>
+                <button class="btn btn-outline-light position-relative" type="button" id="notificationDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                    <i class="fa-regular fa-bell"></i>
+                    <?php if ($unreadNotificationCount > 0): ?>
+                        <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger">
+                            <?= $unreadNotificationCount ?>
+                        </span>
+                    <?php endif; ?>
                 </button>
-                <ul class="dropdown-menu dropdown-menu-end" style="min-width:300px;" id="notifDropdown">
-                    <li><div class="dropdown-header">Thông báo</div></li>
-                    <li><div class="dropdown-item text-muted small text-center py-3">Không có thông báo mới</div></li>
-                </ul>
+                <div class="dropdown-menu dropdown-menu-end shadow-sm notification-dropdown" aria-labelledby="notificationDropdown">
+                    <div class="dropdown-header d-flex justify-content-between align-items-center">
+                        <span>Thông báo chưa đọc</span>
+                        <span class="badge bg-danger"><?= $unreadNotificationCount ?></span>
+                    </div>
+                    <?php if ($headerNotifications): ?>
+                        <?php foreach ($headerNotifications as $notification): ?>
+                            <a class="dropdown-item notification-item" href="/ntn_erp/dashboard.php">
+                                <div class="fw-semibold small"><?= e($notification['title']) ?></div>
+                                <div class="text-muted small"><?= e($notification['message']) ?></div>
+                                <div class="text-muted x-small mt-1"><?= e(formatDateTime($notification['created_at'])) ?></div>
+                            </a>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <div class="dropdown-item text-muted small">Không có thông báo mới.</div>
+                    <?php endif; ?>
+                </div>
             </div>
-            <!-- User menu -->
+
             <div class="dropdown">
-                <button class="btn btn-sm btn-outline-light dropdown-toggle" data-bs-toggle="dropdown">
-                    <i class="fas fa-user-circle me-1"></i>
-                    <?= htmlspecialchars($user['full_name']) ?>
+                <button class="btn btn-outline-light dropdown-toggle d-flex align-items-center gap-2" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                    <span class="text-start d-none d-md-inline-block">
+                        <span class="d-block fw-semibold"><?= e($user['full_name']) ?></span>
+                        <span class="small opacity-75"><?= e($user['employee_code']) ?></span>
+                    </span>
                 </button>
-                <ul class="dropdown-menu dropdown-menu-end">
-                    <li><div class="dropdown-header">
-                        <?php $badge = getRoleBadge($user['role']); ?>
-                        <span class="badge bg-<?= $badge['class'] ?>"><?= $badge['icon'] ?> <?= $badge['label'] ?></span>
-                        <div class="text-muted small mt-1"><?= htmlspecialchars($user['employee_code']) ?></div>
-                    </div></li>
+                <ul class="dropdown-menu dropdown-menu-end shadow-sm">
+                    <li class="px-3 py-2 border-bottom">
+                        <div class="fw-semibold"><?= e($user['full_name']) ?></div>
+                        <span class="badge bg-<?= e($badge['class']) ?> mt-1">
+                            <i class="<?= e($badge['icon']) ?> me-1"></i><?= e($badge['label']) ?>
+                        </span>
+                    </li>
+                    <li><a class="dropdown-item" href="/ntn_erp/modules/users/profile.php"><i class="fa-regular fa-user me-2"></i>Hồ sơ</a></li>
+                    <li><a class="dropdown-item" href="/ntn_erp/modules/users/change_password.php"><i class="fa-solid fa-key me-2"></i>Đổi mật khẩu</a></li>
                     <li><hr class="dropdown-divider"></li>
-                    <li><a class="dropdown-item" href="/ntn_erp/logout.php"><i class="fas fa-sign-out-alt me-2 text-danger"></i>Đăng xuất</a></li>
+                    <li><a class="dropdown-item text-danger" href="/ntn_erp/logout.php"><i class="fa-solid fa-right-from-bracket me-2"></i>Đăng xuất</a></li>
                 </ul>
             </div>
         </div>
